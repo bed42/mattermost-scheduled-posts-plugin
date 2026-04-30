@@ -1,0 +1,10 @@
+dist/
+server/dist/
+webapp/dist/
+webapp/node_modules/
+*.tar.gz
+.idea/
+.vscode/
+*.log
+.DS_Store
+.todos/

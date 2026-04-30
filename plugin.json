@@ -1,0 +1,44 @@
+{
+    "id": "com.bednarz.scheduler",
+    "name": "Message Scheduler",
+    "description": "Schedule messages to be sent later. No license required.",
+    "version": "0.1.0",
+    "min_server_version": "7.0.0",
+    "server": {
+        "executables": {
+            "linux-amd64": "server/dist/plugin-linux-amd64",
+            "linux-arm64": "server/dist/plugin-linux-arm64",
+            "darwin-amd64": "server/dist/plugin-darwin-amd64",
+            "darwin-arm64": "server/dist/plugin-darwin-arm64",
+            "windows-amd64": "server/dist/plugin-windows-amd64.exe"
+        }
+    },
+    "webapp": {
+        "bundle_path": "webapp/dist/main.js"
+    },
+    "settings_schema": {
+        "settings": [
+            {
+                "key": "PollIntervalSeconds",
+                "display_name": "Poll Interval (seconds)",
+                "type": "number",
+                "help_text": "How often the plugin checks for due scheduled messages. Default 30s.",
+                "default": 30
+            },
+            {
+                "key": "MaxAttempts",
+                "display_name": "Max Send Attempts",
+                "type": "number",
+                "help_text": "Maximum number of attempts before a failing message is marked failed. Default 3.",
+                "default": 3
+            },
+            {
+                "key": "DefaultTimezone",
+                "display_name": "Default Timezone",
+                "type": "text",
+                "help_text": "IANA timezone (e.g. Australia/Sydney) used by /schedule when no timezone argument is supplied. Empty = UTC.",
+                "default": "UTC"
+            }
+        ]
+    }
+}
