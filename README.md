@@ -14,9 +14,17 @@ Works on web and desktop. Slash command works on **all platforms** including iOS
 
 A clock icon appears in every channel's header. Clicking it opens the scheduling modal with a date, time, and timezone picker. The modal pre-fills with sensible defaults (next whole hour in your browser's timezone).
 
+![The schedule action button](images/schedule-button.png)
+
+![The new schedule UI](images/scheduling.png)
+
 ### Left sidebar
 
 A "Scheduled" item appears in the sidebar header. When you have pending scheduled messages it shows a count badge and brightens to match unread items; when you don't it dims to match Threads' resting state. Click it to view, refresh, or cancel pending messages.
+
+![Scheduled menu option](images/scheduled1.png)
+
+![Scheduled List](images/scheduled2.png)
 
 ### Slash command
 
