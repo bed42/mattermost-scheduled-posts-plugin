@@ -1,4 +1,4 @@
-import {PLUGIN_ID, ScheduledMessage, CreatePayload} from './types';
+import {PLUGIN_ID, ScheduledMessage, CreatePayload, UpdatePayload} from './types';
 
 const BASE = `/plugins/${PLUGIN_ID}/api`;
 
@@ -44,6 +44,12 @@ export const fetchScheduled = (): Promise<ScheduledMessage[]> =>
 export const createScheduled = (payload: CreatePayload): Promise<ScheduledMessage> =>
     request<ScheduledMessage>('/create', {
         method: 'POST',
+        body: JSON.stringify(payload),
+    });
+
+export const updateScheduled = (payload: UpdatePayload): Promise<ScheduledMessage> =>
+    request<ScheduledMessage>('/update', {
+        method: 'PATCH',
         body: JSON.stringify(payload),
     });
 

@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {useDispatch, useSelector} from 'react-redux';
 
-import {createScheduled} from '../client';
+import {createScheduled, updateScheduled} from '../client';
 import {emitScheduledChanged} from '../events';
 import {closeScheduleModal, selectPluginState} from '../redux';
 import type {EndsMode, RepeatKind} from '../types';
@@ -32,6 +32,22 @@ const todayStr = (): string => {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
+// localPartsInTimezone formats a UTC ms timestamp as wall-clock YYYY-MM-DD and
+// HH:MM strings in the given IANA timezone — exactly the shape the date/time
+// inputs expect, so we can re-seed the form when editing an existing schedule.
+const localPartsInTimezone = (ms: number, tz: string): {date: string; time: string} => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+        timeZone: tz,
+    }).formatToParts(new Date(ms));
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+    return {
+        date: `${get('year')}-${get('month')}-${get('day')}`,
+        time: `${get('hour')}:${get('minute')}`,
+    };
+};
+
 // commonTimezones is a small curated list. Users can also paste any IANA name.
 const commonTimezones = [
     'UTC',
@@ -54,7 +70,7 @@ const buildTzOptions = (): string[] => {
 
 const ScheduleModal: React.FC = () => {
     const dispatch = useDispatch();
-    const {modalOpen, initialMessage} = useSelector(selectPluginState);
+    const {modalOpen, initialMessage, editing} = useSelector(selectPluginState);
     const currentChannelId = useSelector((s: any) => s?.entities?.channels?.currentChannelId as string | undefined);
 
     const seed = useMemo(nextHour, []);
@@ -71,9 +87,23 @@ const ScheduleModal: React.FC = () => {
     const tzOptions = useMemo(buildTzOptions, []);
 
     useEffect(() => {
-        if (modalOpen) {
-            setMessage(initialMessage ?? '');
+        if (!modalOpen) {
+            return;
+        }
+        if (editing) {
+            const seedTz = editing.tz || browserTimezone();
+            const {date: ed, time: et} = localPartsInTimezone(editing.send_at, seedTz);
+            setMessage(editing.message);
+            setDate(ed);
+            setTime(et);
+            setTz(seedTz);
+            setRepeat(editing.repeat ?? '');
+            setEndsMode((editing.ends_mode as EndsMode) || 'never');
+            setEndsOn(editing.ends_at ? localPartsInTimezone(editing.ends_at, seedTz).date : '');
+            setEndsAfter(editing.ends_after ?? 10);
+        } else {
             const seeded = nextHour();
+            setMessage(initialMessage ?? '');
             setDate(seeded.date);
             setTime(seeded.time);
             setTz(browserTimezone());
@@ -81,9 +111,9 @@ const ScheduleModal: React.FC = () => {
             setEndsMode('never');
             setEndsOn('');
             setEndsAfter(10);
-            setError(null);
         }
-    }, [modalOpen, initialMessage]);
+        setError(null);
+    }, [modalOpen, initialMessage, editing]);
 
     if (!modalOpen) {
         return null;
@@ -171,7 +201,8 @@ const ScheduleModal: React.FC = () => {
             setError('Please enter a message.');
             return;
         }
-        if (!currentChannelId) {
+        const channelId = editing ? editing.channel_id : currentChannelId;
+        if (!channelId) {
             setError('No channel selected.');
             return;
         }
@@ -187,18 +218,23 @@ const ScheduleModal: React.FC = () => {
 
         // Build the local datetime and let the server combine it with the timezone.
         const sendAt = `${date}T${time}:00`;
+        const payload = {
+            channel_id: channelId,
+            message: message.trim(),
+            send_at: sendAt,
+            timezone: tz,
+            repeat: repeat || undefined,
+            ends_mode: repeat ? endsMode : undefined,
+            ends_on: repeat && endsMode === 'on' ? endsOn : undefined,
+            ends_after: repeat && endsMode === 'after' ? endsAfter : undefined,
+        };
         setSubmitting(true);
         try {
-            await createScheduled({
-                channel_id: currentChannelId,
-                message: message.trim(),
-                send_at: sendAt,
-                timezone: tz,
-                repeat: repeat || undefined,
-                ends_mode: repeat ? endsMode : undefined,
-                ends_on: repeat && endsMode === 'on' ? endsOn : undefined,
-                ends_after: repeat && endsMode === 'after' ? endsAfter : undefined,
-            });
+            if (editing) {
+                await updateScheduled({...payload, id: editing.id});
+            } else {
+                await createScheduled(payload);
+            }
             emitScheduledChanged();
             dispatch(closeScheduleModal());
         } catch (e: any) {
@@ -221,7 +257,7 @@ const ScheduleModal: React.FC = () => {
                 style={modalStyle}
                 onClick={(e) => e.stopPropagation()}
             >
-                <h3 style={{marginTop: 0}}>{'Schedule a message'}</h3>
+                <h3 style={{marginTop: 0}}>{editing ? 'Edit scheduled message' : 'Schedule a message'}</h3>
 
                 <label style={labelStyle}>{'Message'}</label>
                 <textarea
@@ -335,7 +371,7 @@ const ScheduleModal: React.FC = () => {
                         onClick={onSubmit}
                         disabled={submitting}
                     >
-                        {submitting ? 'Scheduling…' : 'Schedule'}
+                        {submitting ? (editing ? 'Saving…' : 'Scheduling…') : (editing ? 'Save' : 'Schedule')}
                     </button>
                 </div>
             </div>

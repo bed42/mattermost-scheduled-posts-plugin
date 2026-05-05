@@ -3,7 +3,7 @@ import {useDispatch, useSelector} from 'react-redux';
 
 import {cancelScheduled, fetchScheduled} from '../client';
 import {emitScheduledChanged} from '../events';
-import {closeScheduledList, openScheduleModal, selectPluginState} from '../redux';
+import {closeScheduledList, openScheduleModal, openScheduleModalForEdit, selectPluginState} from '../redux';
 import type {ScheduledMessage} from '../types';
 
 // localeForTimezone picks an English locale that knows the IANA abbreviation
@@ -196,13 +196,25 @@ const ScheduledList: React.FC = () => {
                                         <td style={tdStyle}>{m.status}</td>
                                         <td style={tdStyle}>
                                             {!completed && (
-                                                <button
-                                                    type='button'
-                                                    className='btn btn-tertiary'
-                                                    onClick={() => onCancel(m.id)}
-                                                >
-                                                    {'Cancel'}
-                                                </button>
+                                                <div style={{display: 'flex', gap: 6}}>
+                                                    <button
+                                                        type='button'
+                                                        className='btn btn-tertiary'
+                                                        onClick={() => {
+                                                            dispatch(closeScheduledList());
+                                                            dispatch(openScheduleModalForEdit(m));
+                                                        }}
+                                                    >
+                                                        {'Edit'}
+                                                    </button>
+                                                    <button
+                                                        type='button'
+                                                        className='btn btn-tertiary'
+                                                        onClick={() => onCancel(m.id)}
+                                                    >
+                                                        {'Cancel'}
+                                                    </button>
+                                                </div>
                                             )}
                                         </td>
                                     </tr>

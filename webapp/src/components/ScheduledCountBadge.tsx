@@ -40,7 +40,8 @@ const ScheduledCountBadge: React.FC = () => {
                 }
                 const pending = items.filter((i) => i.status === 'pending');
                 setCount(pending.length);
-                setSoonestSendAt(pending.length === 0 ? null : Math.min(...pending.map((p) => p.send_at)));
+                const oneOffPending = pending.filter((p) => !p.repeat);
+                setSoonestSendAt(oneOffPending.length === 0 ? null : Math.min(...oneOffPending.map((p) => p.send_at)));
             } catch {
                 if (!cancelled) {
                     setCount(null);
@@ -60,7 +61,10 @@ const ScheduledCountBadge: React.FC = () => {
     }, []);
 
     const hasPending = count != null && count > 0;
-    // Imminent = at least one pending message scheduled within the next 24h.
+    // Imminent = at least one pending one-off message scheduled within the
+    // next 24h. Recurring schedules are excluded — their next fire is almost
+    // always <24h away, so including them would keep the menu permanently
+    // bold and drown out the signal of an actual one-off about to send.
     // Drives the "loud" styling: bold label, bright mention-coloured badge.
     const imminent = hasPending && soonestSendAt != null && soonestSendAt - Date.now() < IMMINENT_WINDOW_MS;
 

@@ -14,7 +14,7 @@ import (
 const commandTrigger = "schedule"
 
 func (p *Plugin) scheduleCommand() *model.Command {
-	return &model.Command{
+	cmd := &model.Command{
 		Trigger:          commandTrigger,
 		AutoComplete:     true,
 		AutoCompleteDesc: "Schedule a message to be sent later",
@@ -22,6 +22,21 @@ func (p *Plugin) scheduleCommand() *model.Command {
 		DisplayName:      "Schedule",
 		Description:      "Schedule messages to be sent at a future time",
 	}
+
+	ac := model.NewAutocompleteData(commandTrigger, `"message" "YYYY-MM-DD HH:MM" [timezone]`, "Schedule a message to be sent later")
+
+	list := model.NewAutocompleteData("list", "", "List your pending scheduled messages")
+	ac.AddCommand(list)
+
+	cancel := model.NewAutocompleteData("cancel", "<id>", "Cancel a pending scheduled message")
+	cancel.AddTextArgument("ID of the scheduled message to cancel", "<id>", "")
+	ac.AddCommand(cancel)
+
+	help := model.NewAutocompleteData("help", "", "Show usage")
+	ac.AddCommand(help)
+
+	cmd.AutocompleteData = ac
+	return cmd
 }
 
 func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
@@ -185,12 +200,14 @@ func (p *Plugin) handleListCommand(args *model.CommandArgs) (*model.CommandRespo
 		if tz == "" {
 			tz = defaultTz
 		}
+		msg := strings.ReplaceAll(m.Message, "|", `\|`)
+		msg = backtickURLs(msg)
 		fmt.Fprintf(&sb, "| `%s` | %s | %s | %s | %s |\n",
 			m.ID,
 			formatSendAt(m.SendAt, tz),
 			repeatSummary(m),
 			m.Status,
-			truncate(strings.ReplaceAll(m.Message, "|", `\|`), 80),
+			truncate(msg, 80),
 		)
 	}
 	return ephemeral(sb.String()), nil

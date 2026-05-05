@@ -25,6 +25,8 @@ func (p *Plugin) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		p.apiCreate(w, r, userID)
 	case r.Method == http.MethodDelete && r.URL.Path == "/api/cancel":
 		p.apiCancel(w, r, userID)
+	case r.Method == http.MethodPatch && r.URL.Path == "/api/update":
+		p.apiUpdate(w, r, userID)
 	default:
 		http.NotFound(w, r)
 	}
@@ -129,6 +131,111 @@ func (p *Plugin) apiCreate(w http.ResponseWriter, r *http.Request, userID string
 	}
 
 	writeJSON(w, http.StatusCreated, msg)
+}
+
+type updatePayload struct {
+	ID        string `json:"id"`
+	ChannelID string `json:"channel_id"`
+	Message   string `json:"message"`
+	SendAt    string `json:"send_at"`
+	Timezone  string `json:"timezone"`
+
+	Repeat    string `json:"repeat,omitempty"`
+	EndsMode  string `json:"ends_mode,omitempty"`
+	EndsOn    string `json:"ends_on,omitempty"`
+	EndsAfter int    `json:"ends_after,omitempty"`
+}
+
+// apiUpdate edits a pending scheduled message in place. ID, CreatedAt, Status,
+// Attempts, LastError, and Occurrences are preserved — editing a mid-series
+// recurring schedule does not reset its occurrence counter.
+func (p *Plugin) apiUpdate(w http.ResponseWriter, r *http.Request, userID string) {
+	var body updatePayload
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if body.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	body.Message = strings.TrimSpace(body.Message)
+	if body.Message == "" {
+		http.Error(w, "message is required", http.StatusBadRequest)
+		return
+	}
+	if body.ChannelID == "" {
+		http.Error(w, "channel_id is required", http.StatusBadRequest)
+		return
+	}
+	if !p.userCanPostInChannel(userID, body.ChannelID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	existing, err := loadMessage(p.API, userID, body.ID)
+	if err != nil {
+		http.Error(w, "load failed", http.StatusInternalServerError)
+		return
+	}
+	if existing == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if existing.Status != StatusPending {
+		http.Error(w, "only pending messages can be edited", http.StatusConflict)
+		return
+	}
+
+	sendAt, err := parseScheduleTime(body.SendAt, body.Timezone)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateSendAt(sendAt, time.Now().UTC()); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateRecurrence(body.Repeat, body.EndsMode, body.EndsAfter, body.EndsOn != ""); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tz := body.Timezone
+	if tz == "" {
+		tz = p.userOrDefaultTimezone(userID)
+	}
+
+	existing.ChannelID = body.ChannelID
+	existing.Message = body.Message
+	existing.SendAt = sendAt.UnixMilli()
+	existing.Timezone = tz
+	existing.Repeat = body.Repeat
+
+	existing.EndsMode = ""
+	existing.EndsAt = 0
+	existing.EndsAfter = 0
+	if body.Repeat != "" {
+		existing.EndsMode = body.EndsMode
+		if body.EndsMode == EndsAfter {
+			existing.EndsAfter = body.EndsAfter
+		}
+		if body.EndsMode == EndsOn {
+			endsAt, err := parseScheduleTime(body.EndsOn+" 23:59", tz)
+			if err != nil {
+				http.Error(w, "invalid ends_on: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			existing.EndsAt = endsAt.UnixMilli()
+		}
+	}
+
+	if err := saveMessage(p.API, existing); err != nil {
+		p.API.LogError("api: update failed", "err", err.Error())
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, existing)
 }
 
 type cancelPayload struct {

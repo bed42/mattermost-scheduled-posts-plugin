@@ -30,4 +30,6 @@ export type CreatePayload = {
     ends_after?: number;
 };
 
+export type UpdatePayload = CreatePayload & {id: string};
+
 export const PLUGIN_ID = 'com.bednarz.scheduler';

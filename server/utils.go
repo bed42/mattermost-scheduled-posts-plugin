@@ -16,6 +16,17 @@ const minLeadTime = 30 * time.Second
 // quotedArgsPattern captures quoted strings or bare tokens.
 var quotedArgsPattern = regexp.MustCompile(`"([^"]*)"|(\S+)`)
 
+var urlPattern = regexp.MustCompile(`https?://\S+`)
+
+// backtickURLs wraps any http(s) URLs in s with backticks so they render as
+// inline code in markdown — keeps Mattermost from auto-linking URLs in the
+// list ephemeral and triggering link previews on a summary of a future post.
+func backtickURLs(s string) string {
+	return urlPattern.ReplaceAllStringFunc(s, func(u string) string {
+		return "`" + u + "`"
+	})
+}
+
 // parseCommandArgs splits a slash-command argument string preserving quoted segments.
 // Example: `"hello world" "2025-06-01 09:30" UTC` -> ["hello world", "2025-06-01 09:30", "UTC"]
 func parseCommandArgs(input string) []string {
