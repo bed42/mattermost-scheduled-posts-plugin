@@ -12,7 +12,7 @@ Works on web and desktop. Slash command works on **all platforms** including iOS
 
 ### Channel header
 
-A clock icon appears in every channel's header. Clicking it opens the scheduling modal with a date, time, and timezone picker. The modal pre-fills with sensible defaults (next whole hour in your browser's timezone).
+A clock icon appears in every channel's header. Clicking it opens the scheduling modal with a date, time, and timezone picker. The modal pre-fills with sensible defaults (next whole hour in your browser's timezone). You can also opt into a **random time within a range** (e.g. somewhere between 1:00 PM and 3:00 PM) and — for recurring schedules — supply **multiple messages** that rotate.
 
 ![The schedule action button](images/schedule-button.png)
 
@@ -43,7 +43,10 @@ Timezone defaults to your Mattermost profile timezone, then the plugin's configu
 - **No license required** - Works on Mattermost Team Edition
 - **Channel-header UI** - Clock icon opens a calendar/time picker modal
 - **Slash command** - `/schedule "msg" "YYYY-MM-DD HH:MM" [timezone] [repeat=...] [count=N|until=YYYY-MM-DD]`, plus `list` and `cancel <id>`
-- **Recurring schedules** - Daily, weekdays-only, weekly, fortnightly, or monthly, ending never / on a date / after N occurrences. DST-correct: a "weekly Mon 9 AM Sydney" series stays at 9 AM Sydney across DST transitions
+- **Recurring schedules** - Daily, weekdays-only, weekly, fortnightly, monthly, or yearly, ending never / on a date / after N occurrences. DST-correct: a "weekly Mon 9 AM Sydney" series stays at 9 AM Sydney across DST transitions
+- **Random time within a range** - Optionally fire at a random instant within a time window (e.g. "between 1 PM and 3 PM"). For recurring schedules each occurrence picks a fresh random moment inside the same window
+- **Multiple messages on rotation** - Recurring schedules can hold a list of messages. Each fire picks one at random, but the schedule cycles through every message before any can repeat — and avoids the same message back-to-back at cycle boundaries
+- **Edit in place** - Pending schedules (one-offs and recurring) can be edited without cancelling. Editing a rotation's message list resets the cycle so no index is left dangling
 - **Per-user timezone** - Picks up your Mattermost profile timezone (automatic if you have it enabled, else manual). Falls back to a configurable plugin default
 - **Pending list with badge** - Sidebar entry shows live count of pending messages and refreshes on create/cancel and every 30s
 - **Cluster-safe** - Uses an atomic per-message KV lock to prevent duplicate sends across multiple Mattermost nodes
@@ -88,9 +91,11 @@ In **System Console > Plugins > Message Scheduler**:
 
 1. Click the clock icon in any channel header
 2. Type your message, pick a date and time, optionally change the timezone
-3. Click **Schedule**
+3. (Optional) Tick **Fire at a random time within a range** and pick an end time — the schedule will fire at a random instant between start and end
+4. (Optional) Pick a repeat option, then click **+ Add another message** to attach more messages. The schedule will cycle through all of them at random, covering every message once before any can repeat
+5. Click **Schedule**
 
-The message will be sent at the chosen time as if you had typed it yourself in that channel.
+The message will be sent at the chosen time as if you had typed it yourself in that channel. Pending schedules can be edited from the **Scheduled** list in the sidebar.
 
 ### Via the slash command
 
@@ -104,6 +109,7 @@ The message will be sent at the chosen time as if you had typed it yourself in t
 - Send time must be at least 30 seconds in the future
 - The timezone argument is optional — defaults to your Mattermost profile timezone, then `DefaultTimezone`, then UTC
 - Messages are posted as you, in the channel where you ran the command (or, for the modal, the channel you had open)
+- The slash command covers single-message, single-time schedules. Time ranges and message rotation are modal-only — use the clock icon for those
 
 ## Architecture
 
@@ -116,7 +122,7 @@ The message will be sent at the chosen time as if you had typed it yourself in t
 | [server/store.go](server/store.go) | KV store helpers + cluster-safe per-message send lock (`KVSetWithOptions` atomic) |
 | [server/scheduler.go](server/scheduler.go) | Background ticker that finds due messages and dispatches them with retry/lock logic |
 | [server/command.go](server/command.go) | `/schedule` slash command handler (create/list/cancel) |
-| [server/api.go](server/api.go) | HTTP routes for the webapp: `GET /api/list`, `POST /api/create`, `DELETE /api/cancel` |
+| [server/api.go](server/api.go) | HTTP routes for the webapp: `GET /api/list`, `POST /api/create`, `PATCH /api/update`, `DELETE /api/cancel` |
 | [server/utils.go](server/utils.go) | Quoted-arg parsing, RFC3339 + `YYYY-MM-DD HH:MM` time parsing with IANA timezones |
 
 ### Webapp Component (React + TypeScript)
@@ -156,12 +162,12 @@ Other useful targets:
 
 ## Limitations
 
-- **Send time precision** — messages are sent on the next poll tick after their scheduled time, so up to `PollIntervalSeconds` of delay is normal
-- **No edit** — pending messages and recurring series can be cancelled and re-scheduled, but not edited in place
+- **Send time precision** — messages are sent on the next poll tick after their scheduled time, so up to `PollIntervalSeconds` of delay is normal. Random-time-within-a-range schedules inherit the same tick granularity
+- **Random-window cap** — the random fire window is capped at 24 hours, and shorter than the repeat interval is your responsibility (a 2-hour window on a daily schedule is fine; a 26-hour window is rejected)
 - **No file attachments** — only text messages are supported
 - **No threaded replies** — messages post to the channel; you can't schedule a reply into a specific thread
 - **Status visibility** — `failed` messages stay in the user's KV until manually cancelled. `completed` recurring series are kept for 7 days then garbage-collected
-- **Recurrence is fixed-vocabulary** — only the six built-in repeat types (daily, weekdays, weekly, fortnightly, monthly, none). No RRULE strings, no custom intervals like "every 3 days", no "second Tuesday of the month". For anything fancier, schedule one-offs
+- **Recurrence is fixed-vocabulary** — only the seven built-in repeat types (daily, weekdays, weekly, fortnightly, monthly, yearly, none). No RRULE strings, no custom intervals like "every 3 days", no "second Tuesday of the month". For anything fancier, schedule one-offs
 
 ## Security
 
