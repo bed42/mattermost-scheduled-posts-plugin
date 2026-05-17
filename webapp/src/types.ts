@@ -17,6 +17,12 @@ export type ScheduledMessage = {
     ends_at?: number;
     ends_after?: number;
     occurrences?: number;
+    window_ms?: number;
+    fire_at?: number;
+    messages?: string[];
+    message_cycle?: number[];
+    message_cycle_pos?: number;
+    last_sent_index?: number | null;
 };
 
 export type CreatePayload = {
@@ -28,6 +34,8 @@ export type CreatePayload = {
     ends_mode?: EndsMode;
     ends_on?: string;       // YYYY-MM-DD
     ends_after?: number;
+    window_ms?: number;
+    messages?: string[];
 };
 
 export type UpdatePayload = CreatePayload & {id: string};

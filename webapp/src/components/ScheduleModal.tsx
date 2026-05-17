@@ -74,9 +74,11 @@ const ScheduleModal: React.FC = () => {
     const currentChannelId = useSelector((s: any) => s?.entities?.channels?.currentChannelId as string | undefined);
 
     const seed = useMemo(nextHour, []);
-    const [message, setMessage] = useState('');
+    const [messages, setMessages] = useState<string[]>(['']);
     const [date, setDate] = useState(seed.date);
     const [time, setTime] = useState(seed.time);
+    const [useRange, setUseRange] = useState(false);
+    const [endTime, setEndTime] = useState(seed.time);
     const [tz, setTz] = useState(browserTimezone());
     const [repeat, setRepeat] = useState<RepeatKind>('');
     const [endsMode, setEndsMode] = useState<EndsMode>('never');
@@ -93,9 +95,18 @@ const ScheduleModal: React.FC = () => {
         if (editing) {
             const seedTz = editing.tz || browserTimezone();
             const {date: ed, time: et} = localPartsInTimezone(editing.send_at, seedTz);
-            setMessage(editing.message);
+            const list = (editing.messages && editing.messages.length > 0) ? editing.messages : [editing.message];
+            setMessages(list);
             setDate(ed);
             setTime(et);
+            const windowMs = editing.window_ms ?? 0;
+            setUseRange(windowMs > 0);
+            if (windowMs > 0) {
+                const endMs = editing.send_at + windowMs;
+                setEndTime(localPartsInTimezone(endMs, seedTz).time);
+            } else {
+                setEndTime(et);
+            }
             setTz(seedTz);
             setRepeat(editing.repeat ?? '');
             setEndsMode((editing.ends_mode as EndsMode) || 'never');
@@ -103,9 +114,11 @@ const ScheduleModal: React.FC = () => {
             setEndsAfter(editing.ends_after ?? 10);
         } else {
             const seeded = nextHour();
-            setMessage(initialMessage ?? '');
+            setMessages([initialMessage ?? '']);
             setDate(seeded.date);
             setTime(seeded.time);
+            setUseRange(false);
+            setEndTime(seeded.time);
             setTz(browserTimezone());
             setRepeat('');
             setEndsMode('never');
@@ -115,17 +128,59 @@ const ScheduleModal: React.FC = () => {
         setError(null);
     }, [modalOpen, initialMessage, editing]);
 
+    // Trim multi-message list when leaving recurring mode — multi-message
+    // rotations only make sense for repeating schedules.
+    useEffect(() => {
+        if (!repeat && messages.length > 1) {
+            setMessages([messages[0] ?? '']);
+        }
+    }, [repeat]); // eslint-disable-line react-hooks/exhaustive-deps
+
     if (!modalOpen) {
         return null;
     }
 
+    const parseHHMM = (s: string): number | null => {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+        if (!m) {
+            return null;
+        }
+        const h = parseInt(m[1], 10);
+        const mm = parseInt(m[2], 10);
+        if (h < 0 || h > 23 || mm < 0 || mm > 59) {
+            return null;
+        }
+        return (h * 60) + mm;
+    };
+    const startMins = parseHHMM(time);
+    const endMins = parseHHMM(endTime);
+    const windowMinutes = (useRange && startMins != null && endMins != null && endMins > startMins)
+        ? endMins - startMins
+        : 0;
+
+    const formatTimeOfDay = (hhmm: string): string => {
+        try {
+            const local = new Date(`${date}T${hhmm}:00`);
+            return local.toLocaleString(undefined, {
+                hour: 'numeric', minute: '2-digit', timeZone: tz,
+            });
+        } catch {
+            return hhmm;
+        }
+    };
+
     let preview = '';
     try {
         const local = new Date(`${date}T${time}:00`);
-        preview = local.toLocaleString(undefined, {
+        const startStr = local.toLocaleString(undefined, {
             weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
             hour: 'numeric', minute: '2-digit', timeZone: tz, timeZoneName: 'short',
         });
+        if (useRange && windowMinutes > 0) {
+            preview = `${startStr} — random within ${formatTimeOfDay(time)}–${formatTimeOfDay(endTime)}`;
+        } else {
+            preview = startStr;
+        }
     } catch {
         preview = '';
     }
@@ -156,7 +211,9 @@ const ScheduleModal: React.FC = () => {
             default: return `${n}th`;
             }
         };
-        const at = `at ${time} ${tz}`;
+        const at = (useRange && windowMinutes > 0)
+            ? `between ${time} and ${endTime} ${tz}`
+            : `at ${time} ${tz}`;
 
         let body: string;
         switch (repeat) {
@@ -197,7 +254,8 @@ const ScheduleModal: React.FC = () => {
 
     const onSubmit = async () => {
         setError(null);
-        if (!message.trim()) {
+        const trimmed = messages.map((m) => m.trim()).filter((m) => m !== '');
+        if (trimmed.length === 0) {
             setError('Please enter a message.');
             return;
         }
@@ -215,18 +273,35 @@ const ScheduleModal: React.FC = () => {
             setError('Occurrence count must be at least 1.');
             return;
         }
+        if (useRange) {
+            if (startMins == null || endMins == null) {
+                setError('Time range needs a valid start and end.');
+                return;
+            }
+            if (endMins <= startMins) {
+                setError('Range end must be after the start time.');
+                return;
+            }
+        }
+        if (trimmed.length > 1 && !repeat) {
+            setError('Multiple messages need a repeating schedule.');
+            return;
+        }
 
         // Build the local datetime and let the server combine it with the timezone.
         const sendAt = `${date}T${time}:00`;
+        const useMessagesArray = repeat && trimmed.length >= 2;
         const payload = {
             channel_id: channelId,
-            message: message.trim(),
+            message: trimmed[0],
             send_at: sendAt,
             timezone: tz,
             repeat: repeat || undefined,
             ends_mode: repeat ? endsMode : undefined,
             ends_on: repeat && endsMode === 'on' ? endsOn : undefined,
             ends_after: repeat && endsMode === 'after' ? endsAfter : undefined,
+            window_ms: useRange && windowMinutes > 0 ? windowMinutes * 60_000 : undefined,
+            messages: useMessagesArray ? trimmed : undefined,
         };
         setSubmitting(true);
         try {
@@ -259,15 +334,47 @@ const ScheduleModal: React.FC = () => {
             >
                 <h3 style={{marginTop: 0}}>{editing ? 'Edit scheduled message' : 'Schedule a message'}</h3>
 
-                <label style={labelStyle}>{'Message'}</label>
-                <textarea
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    rows={4}
-                    style={textareaStyle}
-                    placeholder='What do you want to say?'
-                    autoFocus={true}
-                />
+                <label style={labelStyle}>
+                    {messages.length > 1 ? `Messages (${messages.length}, rotating)` : 'Message'}
+                </label>
+                {messages.map((m, i) => (
+                    <div
+                        key={i}
+                        style={{display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: i === 0 ? 0 : 8}}
+                    >
+                        <textarea
+                            value={m}
+                            onChange={(e) => {
+                                const next = messages.slice();
+                                next[i] = e.target.value;
+                                setMessages(next);
+                            }}
+                            rows={messages.length > 1 ? 2 : 4}
+                            style={{...textareaStyle, flex: 1}}
+                            placeholder={i === 0 ? 'What do you want to say?' : `Message ${i + 1}`}
+                            autoFocus={i === 0}
+                        />
+                        {messages.length > 1 && (
+                            <button
+                                type='button'
+                                onClick={() => setMessages(messages.filter((_, j) => j !== i))}
+                                style={removeButtonStyle}
+                                aria-label={`Remove message ${i + 1}`}
+                            >
+                                {'×'}
+                            </button>
+                        )}
+                    </div>
+                ))}
+                {repeat && (
+                    <button
+                        type='button'
+                        onClick={() => setMessages([...messages, ''])}
+                        style={addAnotherStyle}
+                    >
+                        {'+ Add another message'}
+                    </button>
+                )}
 
                 <div style={{display: 'flex', gap: 12, marginTop: 12}}>
                     <div style={{flex: 1}}>
@@ -281,7 +388,7 @@ const ScheduleModal: React.FC = () => {
                         />
                     </div>
                     <div style={{flex: 1}}>
-                        <label style={labelStyle}>{'Time'}</label>
+                        <label style={labelStyle}>{useRange ? 'Start time' : 'Time'}</label>
                         <input
                             type='time'
                             value={time}
@@ -289,7 +396,26 @@ const ScheduleModal: React.FC = () => {
                             style={inputStyle}
                         />
                     </div>
+                    {useRange && (
+                        <div style={{flex: 1}}>
+                            <label style={labelStyle}>{'End time'}</label>
+                            <input
+                                type='time'
+                                value={endTime}
+                                onChange={(e) => setEndTime(e.target.value)}
+                                style={inputStyle}
+                            />
+                        </div>
+                    )}
                 </div>
+                <label style={{...labelStyle, display: 'flex', alignItems: 'center', gap: 6, textTransform: 'none', fontWeight: 'normal', letterSpacing: 0, marginTop: 8}}>
+                    <input
+                        type='checkbox'
+                        checked={useRange}
+                        onChange={(e) => setUseRange(e.target.checked)}
+                    />
+                    {'Fire at a random time within a range'}
+                </label>
 
                 <label style={labelStyle}>{'Timezone'}</label>
                 <select
@@ -397,6 +523,8 @@ const modalStyle: React.CSSProperties = {
     minWidth: 420,
     maxWidth: 540,
     width: '90%',
+    maxHeight: '85vh',
+    overflowY: 'auto',
     boxShadow: '0 10px 40px rgba(0,0,0,0.25)',
 };
 
@@ -438,6 +566,30 @@ const errorStyle: React.CSSProperties = {
     marginTop: 12,
     color: '#d24b4e',
     fontSize: 13,
+};
+
+const removeButtonStyle: React.CSSProperties = {
+    border: '1px solid rgba(63,67,80,0.16)',
+    background: 'transparent',
+    borderRadius: 4,
+    width: 28,
+    height: 28,
+    cursor: 'pointer',
+    fontSize: 16,
+    lineHeight: 1,
+    color: 'inherit',
+    flexShrink: 0,
+};
+
+const addAnotherStyle: React.CSSProperties = {
+    background: 'transparent',
+    border: 'none',
+    color: 'var(--link-color, #166de0)',
+    padding: '6px 0',
+    marginTop: 6,
+    fontSize: 13,
+    cursor: 'pointer',
+    textAlign: 'left',
 };
 
 export default ScheduleModal;

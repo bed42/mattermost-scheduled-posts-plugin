@@ -48,7 +48,7 @@ func (p *Plugin) sendDueMessages() {
 
 	for _, msg := range msgs {
 		// GC completed series after the retention window.
-		if msg.Status == StatusCompleted && msg.SendAt < now-completedRetentionMs {
+		if msg.Status == StatusCompleted && msg.effectiveFireAt() < now-completedRetentionMs {
 			if err := deleteMessage(p.API, msg.UserID, msg.ID); err != nil {
 				p.API.LogWarn("scheduler: gc of completed message failed", "id", msg.ID, "err", err.Error())
 			}
@@ -57,7 +57,7 @@ func (p *Plugin) sendDueMessages() {
 		if msg.Status != StatusPending {
 			continue
 		}
-		if msg.SendAt > now {
+		if msg.effectiveFireAt() > now {
 			continue
 		}
 		p.dispatch(msg, maxAttempts)
@@ -82,10 +82,11 @@ func (p *Plugin) dispatch(msg *ScheduledMessage, maxAttempts int) {
 		return
 	}
 
+	body, sentIdx := pickMessageBody(current)
 	post := &model.Post{
 		ChannelId: current.ChannelID,
 		UserId:    current.UserID,
-		Message:   current.Message,
+		Message:   body,
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
 		current.Attempts++
@@ -116,13 +117,20 @@ func (p *Plugin) dispatch(msg *ScheduledMessage, maxAttempts int) {
 		}
 		return
 	}
-	p.advanceRecurring(current)
+	p.advanceRecurring(current, sentIdx)
 }
 
 // advanceRecurring rolls a successfully-sent recurring message to its next
-// occurrence, or marks it completed if the series has ended.
-func (p *Plugin) advanceRecurring(msg *ScheduledMessage) {
+// occurrence, or marks it completed if the series has ended. When sentIdx
+// is non-negative the rotation pos and LastSentIndex are updated for the
+// just-sent message.
+func (p *Plugin) advanceRecurring(msg *ScheduledMessage, sentIdx int) {
 	msg.Occurrences++
+	if sentIdx >= 0 {
+		idx := sentIdx
+		msg.LastSentIndex = &idx
+		msg.MessageCyclePos++
+	}
 	next, err := nextOccurrence(time.UnixMilli(msg.SendAt), msg.Repeat, msg.Timezone)
 	if err != nil {
 		// Bad recurrence (shouldn't happen — validated at create time) — log & delete.
@@ -134,17 +142,28 @@ func (p *Plugin) advanceRecurring(msg *ScheduledMessage) {
 		msg.Status = StatusCompleted
 		msg.Attempts = 0
 		msg.LastError = ""
+		msg.FireAt = 0
 		if err := saveMessage(p.API, msg); err != nil {
 			p.API.LogError("scheduler: failed to mark series completed", "id", msg.ID, "err", err.Error())
 		}
 		return
 	}
 	msg.SendAt = next.UnixMilli()
+	msg.FireAt = randomFireAt(msg.SendAt, msg.WindowMs)
 	msg.Attempts = 0
 	msg.LastError = ""
 	if err := saveMessage(p.API, msg); err != nil {
 		p.API.LogError("scheduler: failed to roll forward recurring message", "id", msg.ID, "err", err.Error())
 	}
+}
+
+// randomFireAt returns sendAt + a random offset in [0, windowMs) when
+// windowMs > 0, or 0 otherwise (signalling "no random window — use SendAt").
+func randomFireAt(sendAt, windowMs int64) int64 {
+	if windowMs <= 0 {
+		return 0
+	}
+	return sendAt + randInt63n(windowMs)
 }
 
 // skipFailedOccurrence advances a recurring message past an occurrence that
@@ -160,12 +179,14 @@ func (p *Plugin) skipFailedOccurrence(msg *ScheduledMessage, lastErr string) {
 	}
 	if seriesEnded(msg, next) {
 		msg.Status = StatusCompleted
+		msg.FireAt = 0
 		if err := saveMessage(p.API, msg); err != nil {
 			p.API.LogError("scheduler: failed to complete after skip", "id", msg.ID, "err", err.Error())
 		}
 		return
 	}
 	msg.SendAt = next.UnixMilli()
+	msg.FireAt = randomFireAt(msg.SendAt, msg.WindowMs)
 	msg.Attempts = 0
 	msg.LastError = "skipped: " + lastErr
 	if err := saveMessage(p.API, msg); err != nil {

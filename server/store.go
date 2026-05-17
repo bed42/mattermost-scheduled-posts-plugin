@@ -52,6 +52,32 @@ type ScheduledMessage struct {
 	EndsAt      int64  `json:"ends_at,omitempty"`
 	EndsAfter   int    `json:"ends_after,omitempty"`
 	Occurrences int    `json:"occurrences,omitempty"`
+
+	// Random fire window: when WindowMs > 0 the actual fire instant is FireAt,
+	// chosen randomly in [SendAt, SendAt+WindowMs). SendAt stays as the
+	// window-start anchor so nextOccurrence re-anchors recurring schedules.
+	WindowMs int64 `json:"window_ms,omitempty"`
+	FireAt   int64 `json:"fire_at,omitempty"`
+
+	// Multi-message rotation (recurring only). Messages is the rotation pool;
+	// MessageCycle is the current shuffled order of indices into Messages,
+	// MessageCyclePos is the next index within the cycle to send.
+	// LastSentIndex remembers the previous occurrence's index so a new cycle
+	// can avoid starting with the message that just fired.
+	Messages        []string `json:"messages,omitempty"`
+	MessageCycle    []int    `json:"message_cycle,omitempty"`
+	MessageCyclePos int      `json:"message_cycle_pos,omitempty"`
+	LastSentIndex   *int     `json:"last_sent_index,omitempty"`
+}
+
+// effectiveFireAt is the moment the scheduler should actually post. For
+// windowed schedules this is the per-occurrence randomised FireAt; otherwise
+// (and for legacy records) it falls back to SendAt.
+func (m *ScheduledMessage) effectiveFireAt() int64 {
+	if m.FireAt > 0 {
+		return m.FireAt
+	}
+	return m.SendAt
 }
 
 func messageKey(userID, msgID string) string {

@@ -55,6 +55,9 @@ type createPayload struct {
 	EndsMode  string `json:"ends_mode,omitempty"`
 	EndsOn    string `json:"ends_on,omitempty"` // YYYY-MM-DD interpreted in Timezone
 	EndsAfter int    `json:"ends_after,omitempty"`
+
+	WindowMs int64    `json:"window_ms,omitempty"`
+	Messages []string `json:"messages,omitempty"`
 }
 
 func (p *Plugin) apiCreate(w http.ResponseWriter, r *http.Request, userID string) {
@@ -64,12 +67,13 @@ func (p *Plugin) apiCreate(w http.ResponseWriter, r *http.Request, userID string
 		return
 	}
 	body.Message = strings.TrimSpace(body.Message)
+	body.Messages = trimMessages(body.Messages)
 
 	if body.ChannelID == "" {
 		http.Error(w, "channel_id is required", http.StatusBadRequest)
 		return
 	}
-	if body.Message == "" {
+	if body.Message == "" && len(body.Messages) == 0 {
 		http.Error(w, "message is required", http.StatusBadRequest)
 		return
 	}
@@ -92,23 +96,37 @@ func (p *Plugin) apiCreate(w http.ResponseWriter, r *http.Request, userID string
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := validateExtras(body.Repeat, body.WindowMs, body.Messages); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	tz := body.Timezone
 	if tz == "" {
 		tz = p.userOrDefaultTimezone(userID)
 	}
 
+	primaryMessage := body.Message
+	if len(body.Messages) > 0 {
+		primaryMessage = body.Messages[0]
+	}
+
 	msg := &ScheduledMessage{
 		ID:        model.NewId(),
 		ChannelID: body.ChannelID,
 		UserID:    userID,
-		Message:   body.Message,
+		Message:   primaryMessage,
 		SendAt:    sendAt.UnixMilli(),
 		CreatedAt: time.Now().UTC().UnixMilli(),
 		Status:    StatusPending,
 		Timezone:  tz,
 		Repeat:    body.Repeat,
+		WindowMs:  body.WindowMs,
 	}
+	if len(body.Messages) > 0 {
+		msg.Messages = body.Messages
+	}
+	msg.FireAt = randomFireAt(msg.SendAt, msg.WindowMs)
 	if body.Repeat != "" {
 		msg.EndsMode = body.EndsMode
 		if body.EndsMode == EndsAfter {
@@ -144,6 +162,9 @@ type updatePayload struct {
 	EndsMode  string `json:"ends_mode,omitempty"`
 	EndsOn    string `json:"ends_on,omitempty"`
 	EndsAfter int    `json:"ends_after,omitempty"`
+
+	WindowMs int64    `json:"window_ms,omitempty"`
+	Messages []string `json:"messages,omitempty"`
 }
 
 // apiUpdate edits a pending scheduled message in place. ID, CreatedAt, Status,
@@ -160,7 +181,8 @@ func (p *Plugin) apiUpdate(w http.ResponseWriter, r *http.Request, userID string
 		return
 	}
 	body.Message = strings.TrimSpace(body.Message)
-	if body.Message == "" {
+	body.Messages = trimMessages(body.Messages)
+	if body.Message == "" && len(body.Messages) == 0 {
 		http.Error(w, "message is required", http.StatusBadRequest)
 		return
 	}
@@ -200,17 +222,37 @@ func (p *Plugin) apiUpdate(w http.ResponseWriter, r *http.Request, userID string
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := validateExtras(body.Repeat, body.WindowMs, body.Messages); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	tz := body.Timezone
 	if tz == "" {
 		tz = p.userOrDefaultTimezone(userID)
 	}
 
+	primaryMessage := body.Message
+	if len(body.Messages) > 0 {
+		primaryMessage = body.Messages[0]
+	}
+
 	existing.ChannelID = body.ChannelID
-	existing.Message = body.Message
+	existing.Message = primaryMessage
 	existing.SendAt = sendAt.UnixMilli()
 	existing.Timezone = tz
 	existing.Repeat = body.Repeat
+	existing.WindowMs = body.WindowMs
+	existing.FireAt = randomFireAt(existing.SendAt, existing.WindowMs)
+
+	// Reset rotation when the message list changes (also when Messages
+	// goes from non-empty to empty, e.g. user removed extras).
+	if !equalStrings(existing.Messages, body.Messages) {
+		existing.Messages = body.Messages
+		existing.MessageCycle = nil
+		existing.MessageCyclePos = 0
+		existing.LastSentIndex = nil
+	}
 
 	existing.EndsMode = ""
 	existing.EndsAt = 0

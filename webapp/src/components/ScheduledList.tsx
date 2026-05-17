@@ -39,6 +39,24 @@ const formatLocal = (ms: number, tz: string): string => {
     return `${get('weekday')} ${get('day')} ${get('month')} ${get('year')} at ${get('hour')}:${get('minute')} ${get('dayPeriod').toUpperCase()} ${get('timeZoneName')}`;
 };
 
+// formatTimeOfDay renders just the clock portion ("11:45 AM") in the given tz.
+const formatTimeOfDay = (ms: number, tz: string): string => {
+    const parts = new Intl.DateTimeFormat(localeForTimezone(tz), {
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz,
+    }).formatToParts(new Date(ms));
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+    return `${get('hour')}:${get('minute')} ${get('dayPeriod').toUpperCase()}`;
+};
+
+// formatWhen shows either a single instant or a randomised window for the When column.
+const formatWhen = (m: ScheduledMessage, tz: string): string => {
+    const base = formatLocal(m.send_at, tz);
+    if (!m.window_ms || m.window_ms <= 0) {
+        return base;
+    }
+    return `${base} – ${formatTimeOfDay(m.send_at + m.window_ms, tz)} (random)`;
+};
+
 // describeRepeat returns the short summary shown in the Repeat column.
 const describeRepeat = (m: ScheduledMessage, tz: string): string => {
     if (!m.repeat) {
@@ -189,10 +207,17 @@ const ScheduledList: React.FC = () => {
                                 const rowTz = m.tz || userTz;
                                 return (
                                     <tr key={m.id} style={completed ? completedRowStyle : undefined}>
-                                        <td style={tdStyle}>{formatLocal(m.send_at, rowTz)}</td>
+                                        <td style={tdStyle}>{formatWhen(m, rowTz)}</td>
                                         <td style={tdStyle}>{channelName(m.channel_id)}</td>
                                         <td style={tdStyle}>{describeRepeat(m, rowTz)}</td>
-                                        <td style={tdStyle}>{m.message.length > 80 ? m.message.slice(0, 80) + '…' : m.message}</td>
+                                        <td style={tdStyle}>
+                                            {m.message.length > 80 ? m.message.slice(0, 80) + '…' : m.message}
+                                            {m.messages && m.messages.length >= 2 && (
+                                                <div style={rotationHintStyle}>
+                                                    {`+ ${m.messages.length - 1} more (rotating)`}
+                                                </div>
+                                            )}
+                                        </td>
                                         <td style={tdStyle}>{m.status}</td>
                                         <td style={tdStyle}>
                                             {!completed && (
@@ -300,6 +325,12 @@ const errorStyle: React.CSSProperties = {
 const completedRowStyle: React.CSSProperties = {
     opacity: 0.55,
     fontStyle: 'italic',
+};
+
+const rotationHintStyle: React.CSSProperties = {
+    fontSize: 11,
+    color: 'rgba(63,67,80,0.6)',
+    marginTop: 2,
 };
 
 export default ScheduledList;
