@@ -2,7 +2,7 @@
     "id": "com.bednarz.scheduler",
     "name": "Message Scheduler",
     "description": "Schedule messages to be sent later. No license required.",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "min_server_version": "7.0.0",
     "server": {
         "executables": {

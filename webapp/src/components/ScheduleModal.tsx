@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {useDispatch, useSelector} from 'react-redux';
 
 import {createScheduled, updateScheduled} from '../client';
@@ -68,10 +68,73 @@ const buildTzOptions = (): string[] => {
     return Array.from(set).sort();
 };
 
+type ChannelOption = {id: string; label: string; type: string};
+
 const ScheduleModal: React.FC = () => {
     const dispatch = useDispatch();
     const {modalOpen, initialMessage, editing} = useSelector(selectPluginState);
     const currentChannelId = useSelector((s: any) => s?.entities?.channels?.currentChannelId as string | undefined);
+    const allChannels = useSelector((s: any) => s?.entities?.channels?.channels as Record<string, any> | undefined);
+    const myMembers = useSelector((s: any) => s?.entities?.channels?.myMembers as Record<string, any> | undefined);
+    const currentTeamId = useSelector((s: any) => s?.entities?.teams?.currentTeamId as string | undefined);
+    const profiles = useSelector((s: any) => s?.entities?.users?.profiles as Record<string, any> | undefined);
+    const currentUserId = useSelector((s: any) => s?.entities?.users?.currentUserId as string | undefined);
+
+    const channelOptions = useMemo<ChannelOption[]>(() => {
+        if (!allChannels || !myMembers) {
+            return [];
+        }
+        const opts: ChannelOption[] = [];
+        for (const ch of Object.values<any>(allChannels)) {
+            if (!myMembers[ch.id]) {
+                continue;
+            }
+            if (ch.delete_at && ch.delete_at > 0) {
+                continue;
+            }
+            let label = '';
+            if (ch.type === 'D') {
+                let teammateId = ch.teammate_id;
+                if (!teammateId && ch.name && currentUserId) {
+                    const parts = ch.name.split('__');
+                    teammateId = parts.find((p: string) => p !== currentUserId) || parts[0];
+                }
+                const p = teammateId ? profiles?.[teammateId] : undefined;
+                label = p?.username ? `@${p.username}` : (ch.display_name || ch.name || ch.id);
+            } else if (ch.type === 'G') {
+                label = ch.display_name ? ch.display_name.split(',').map((s: string) => `@${s.trim()}`).join(', ') : (ch.name || ch.id);
+            } else {
+                // Public/private channels: restrict to current team so we don't surface every team's channels.
+                if (currentTeamId && ch.team_id && ch.team_id !== currentTeamId) {
+                    continue;
+                }
+                const prefix = ch.type === 'P' ? '🔒 ' : '# ';
+                label = `${prefix}${ch.display_name || ch.name || ch.id}`;
+            }
+            opts.push({id: ch.id, label, type: ch.type});
+        }
+        opts.sort((a, b) => {
+            const typeRank = (t: string) => (t === 'O' || t === 'P' ? 0 : 1);
+            const r = typeRank(a.type) - typeRank(b.type);
+            if (r !== 0) {
+                return r;
+            }
+            return a.label.localeCompare(b.label);
+        });
+        return opts;
+    }, [allChannels, myMembers, currentTeamId, profiles, currentUserId]);
+
+    const channelLabelById = (id: string): string => {
+        const opt = channelOptions.find((o) => o.id === id);
+        return opt?.label ?? id;
+    };
+
+    const [channelId, setChannelId] = useState<string>('');
+    const [channelQuery, setChannelQuery] = useState<string>('');
+    const [channelMenuOpen, setChannelMenuOpen] = useState(false);
+    const [highlightedIndex, setHighlightedIndex] = useState(0);
+    const channelPickerRef = useRef<HTMLDivElement>(null);
+    const channelListRef = useRef<HTMLUListElement>(null);
 
     const seed = useMemo(nextHour, []);
     const [messages, setMessages] = useState<string[]>(['']);
@@ -92,6 +155,10 @@ const ScheduleModal: React.FC = () => {
         if (!modalOpen) {
             return;
         }
+        const seededChannelId = editing ? editing.channel_id : (currentChannelId ?? '');
+        setChannelId(seededChannelId);
+        setChannelQuery(seededChannelId ? channelLabelById(seededChannelId) : '');
+        setChannelMenuOpen(false);
         if (editing) {
             const seedTz = editing.tz || browserTimezone();
             const {date: ed, time: et} = localPartsInTimezone(editing.send_at, seedTz);
@@ -135,6 +202,63 @@ const ScheduleModal: React.FC = () => {
             setMessages([messages[0] ?? '']);
         }
     }, [repeat]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Keep the channel input in sync with the selected channel's label
+    // whenever the menu is closed (covers late-loading channel data and
+    // post-selection state).
+    useEffect(() => {
+        if (channelMenuOpen) {
+            return;
+        }
+        if (channelId) {
+            setChannelQuery(channelLabelById(channelId));
+        }
+    }, [channelId, channelOptions, channelMenuOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        if (!channelMenuOpen) {
+            return undefined;
+        }
+        const onDocClick = (e: MouseEvent) => {
+            if (channelPickerRef.current && !channelPickerRef.current.contains(e.target as Node)) {
+                setChannelMenuOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', onDocClick);
+        return () => document.removeEventListener('mousedown', onDocClick);
+    }, [channelMenuOpen]);
+
+    const filteredChannels = useMemo<ChannelOption[]>(() => {
+        const selectedLabel = channelId ? channelLabelById(channelId) : '';
+        const q = channelQuery.trim().toLowerCase();
+        // If query matches the selected label exactly, show the full list — the
+        // user just opened the menu without typing anything new.
+        if (!q || channelQuery === selectedLabel) {
+            return channelOptions.slice(0, 100);
+        }
+        return channelOptions.filter((o) => o.label.toLowerCase().includes(q)).slice(0, 100);
+    }, [channelOptions, channelQuery, channelId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // When the menu opens, point the highlight at the currently selected
+    // channel (if visible) so up/down feels natural; otherwise highlight the
+    // first match. When the filter changes, clamp the highlight back to 0.
+    useEffect(() => {
+        if (!channelMenuOpen) {
+            return;
+        }
+        const i = filteredChannels.findIndex((o) => o.id === channelId);
+        setHighlightedIndex(i >= 0 ? i : 0);
+    }, [channelMenuOpen, filteredChannels, channelId]);
+
+    // Keep the highlighted option in view as the user arrows up and down.
+    useEffect(() => {
+        if (!channelMenuOpen) {
+            return;
+        }
+        const list = channelListRef.current;
+        const item = list?.children[highlightedIndex] as HTMLElement | undefined;
+        item?.scrollIntoView({block: 'nearest'});
+    }, [highlightedIndex, channelMenuOpen]);
 
     if (!modalOpen) {
         return null;
@@ -259,8 +383,8 @@ const ScheduleModal: React.FC = () => {
             setError('Please enter a message.');
             return;
         }
-        const channelId = editing ? editing.channel_id : currentChannelId;
-        if (!channelId) {
+        const targetChannelId = editing ? editing.channel_id : channelId;
+        if (!targetChannelId) {
             setError('No channel selected.');
             return;
         }
@@ -292,7 +416,7 @@ const ScheduleModal: React.FC = () => {
         const sendAt = `${date}T${time}:00`;
         const useMessagesArray = repeat && trimmed.length >= 2;
         const payload = {
-            channel_id: channelId,
+            channel_id: targetChannelId,
             message: trimmed[0],
             send_at: sendAt,
             timezone: tz,
@@ -333,6 +457,126 @@ const ScheduleModal: React.FC = () => {
                 onClick={(e) => e.stopPropagation()}
             >
                 <h3 style={{marginTop: 0}}>{editing ? 'Edit scheduled message' : 'Schedule a message'}</h3>
+
+                <label style={labelStyle}>{'Send to'}</label>
+                {editing ? (
+                    <input
+                        type='text'
+                        value={channelLabelById(editing.channel_id)}
+                        disabled={true}
+                        style={inputStyle}
+                    />
+                ) : (
+                    <div
+                        ref={channelPickerRef}
+                        style={{position: 'relative'}}
+                    >
+                        <input
+                            type='text'
+                            value={channelQuery}
+                            placeholder='Type a channel name or @user'
+                            role='combobox'
+                            aria-expanded={channelMenuOpen}
+                            aria-controls='schedule-channel-listbox'
+                            aria-activedescendant={
+                                channelMenuOpen && filteredChannels[highlightedIndex] ?
+                                    `schedule-channel-opt-${filteredChannels[highlightedIndex].id}` :
+                                    undefined
+                            }
+                            onChange={(e) => {
+                                setChannelQuery(e.target.value);
+                                setChannelMenuOpen(true);
+                            }}
+                            onFocus={(e) => {
+                                setChannelMenuOpen(true);
+                                e.currentTarget.select();
+                            }}
+                            onKeyDown={(e) => {
+                                if (e.key === 'ArrowDown') {
+                                    e.preventDefault();
+                                    if (!channelMenuOpen) {
+                                        setChannelMenuOpen(true);
+                                        return;
+                                    }
+                                    setHighlightedIndex((i) => Math.min(i + 1, filteredChannels.length - 1));
+                                } else if (e.key === 'ArrowUp') {
+                                    e.preventDefault();
+                                    if (!channelMenuOpen) {
+                                        setChannelMenuOpen(true);
+                                        return;
+                                    }
+                                    setHighlightedIndex((i) => Math.max(i - 1, 0));
+                                } else if (e.key === 'Home') {
+                                    if (channelMenuOpen) {
+                                        e.preventDefault();
+                                        setHighlightedIndex(0);
+                                    }
+                                } else if (e.key === 'End') {
+                                    if (channelMenuOpen) {
+                                        e.preventDefault();
+                                        setHighlightedIndex(filteredChannels.length - 1);
+                                    }
+                                } else if (e.key === 'Enter') {
+                                    if (channelMenuOpen && filteredChannels[highlightedIndex]) {
+                                        e.preventDefault();
+                                        const o = filteredChannels[highlightedIndex];
+                                        setChannelId(o.id);
+                                        setChannelQuery(o.label);
+                                        setChannelMenuOpen(false);
+                                    }
+                                } else if (e.key === 'Escape') {
+                                    if (channelMenuOpen) {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setChannelMenuOpen(false);
+                                        // Revert any typed-but-not-committed text.
+                                        if (channelId) {
+                                            setChannelQuery(channelLabelById(channelId));
+                                        }
+                                    }
+                                } else if (e.key === 'Tab') {
+                                    setChannelMenuOpen(false);
+                                }
+                            }}
+                            style={inputStyle}
+                        />
+                        {channelMenuOpen && filteredChannels.length > 0 && (
+                            <ul
+                                id='schedule-channel-listbox'
+                                role='listbox'
+                                ref={channelListRef}
+                                style={pickerMenuStyle}
+                            >
+                                {filteredChannels.map((o, idx) => (
+                                    <li
+                                        key={o.id}
+                                        id={`schedule-channel-opt-${o.id}`}
+                                        role='option'
+                                        aria-selected={o.id === channelId}
+                                        style={{
+                                            ...pickerOptionStyle,
+                                            ...(idx === highlightedIndex ? pickerOptionHighlightedStyle : null),
+                                            ...(o.id === channelId ? pickerOptionSelectedStyle : null),
+                                        }}
+                                        onMouseEnter={() => setHighlightedIndex(idx)}
+                                        onMouseDown={(e) => {
+                                            // mouseDown (not click) so we beat the input's blur
+                                            e.preventDefault();
+                                            setChannelId(o.id);
+                                            setChannelQuery(o.label);
+                                            setChannelMenuOpen(false);
+                                        }}
+                                    >
+                                        {o.label}
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                        {channelMenuOpen && filteredChannels.length === 0 && (
+                            <div style={pickerEmptyStyle}>{'No matches.'}</div>
+                        )}
+                    </div>
+                )}
 
                 <label style={labelStyle}>
                     {messages.length > 1 ? `Messages (${messages.length}, rotating)` : 'Message'}
@@ -579,6 +823,55 @@ const removeButtonStyle: React.CSSProperties = {
     lineHeight: 1,
     color: 'inherit',
     flexShrink: 0,
+};
+
+const pickerMenuStyle: React.CSSProperties = {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: 2,
+    maxHeight: 220,
+    overflowY: 'auto',
+    background: 'var(--center-channel-bg, #fff)',
+    border: '1px solid rgba(63,67,80,0.16)',
+    borderRadius: 4,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+    zIndex: 10001,
+    listStyle: 'none',
+    padding: 4,
+    margin: 0,
+};
+
+const pickerOptionStyle: React.CSSProperties = {
+    padding: '6px 10px',
+    cursor: 'pointer',
+    fontSize: 13,
+    borderRadius: 3,
+};
+
+const pickerOptionHighlightedStyle: React.CSSProperties = {
+    background: 'rgba(28,88,217,0.12)',
+};
+
+const pickerOptionSelectedStyle: React.CSSProperties = {
+    fontWeight: 600,
+};
+
+const pickerEmptyStyle: React.CSSProperties = {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: 2,
+    background: 'var(--center-channel-bg, #fff)',
+    border: '1px solid rgba(63,67,80,0.16)',
+    borderRadius: 4,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+    zIndex: 10001,
+    padding: '8px 10px',
+    fontSize: 13,
+    color: 'rgba(63,67,80,0.6)',
 };
 
 const addAnotherStyle: React.CSSProperties = {

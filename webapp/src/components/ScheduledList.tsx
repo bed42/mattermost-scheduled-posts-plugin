@@ -100,7 +100,9 @@ const resolveUserTimezone = (state: any): string => {
 const ScheduledList: React.FC = () => {
     const dispatch = useDispatch();
     const {listOpen} = useSelector(selectPluginState);
-    const channels = useSelector((s: any) => s?.entities?.channels?.channels as Record<string, {display_name?: string; name?: string}> | undefined);
+    const channels = useSelector((s: any) => s?.entities?.channels?.channels as Record<string, {type?: string; display_name?: string; name?: string; teammate_id?: string}> | undefined);
+    const profiles = useSelector((s: any) => s?.entities?.users?.profiles as Record<string, {username?: string; first_name?: string; last_name?: string; nickname?: string}> | undefined);
+    const currentUserId = useSelector((s: any) => s?.entities?.users?.currentUserId as string | undefined);
     const userTz = useSelector(resolveUserTimezone);
 
     const [items, setItems] = useState<ScheduledMessage[]>([]);
@@ -143,6 +145,24 @@ const ScheduledList: React.FC = () => {
 
     const channelName = (id: string) => {
         const ch = channels?.[id];
+        if (ch?.type === 'D') {
+            // For DMs the channel's display_name/name is the concatenated user IDs.
+            // Always render the teammate as @username so it's visually distinct from channels.
+            let teammateId = ch.teammate_id;
+            if (!teammateId && ch.name && currentUserId) {
+                const parts = ch.name.split('__');
+                teammateId = parts.find((p) => p !== currentUserId) || parts[0];
+            }
+            const p = teammateId ? profiles?.[teammateId] : undefined;
+            if (p?.username) {
+                return `@${p.username}`;
+            }
+        }
+        if (ch?.type === 'G' && ch.display_name) {
+            // Mattermost builds GM display_name as a comma-separated list of usernames.
+            // Prefix each with @ so users are visually distinct from channel names.
+            return ch.display_name.split(',').map((s) => `@${s.trim()}`).join(', ');
+        }
         return ch?.display_name || ch?.name || id;
     };
 
