@@ -46,7 +46,10 @@ func (p *Plugin) apiList(w http.ResponseWriter, _ *http.Request, userID string) 
 }
 
 type createPayload struct {
-	ChannelID string `json:"channel_id"`
+	ChannelIDs []string `json:"channel_ids"`
+	// ChannelID is accepted as a legacy fallback for older webapp builds that
+	// haven't been redeployed yet. New clients send ChannelIDs.
+	ChannelID string `json:"channel_id,omitempty"`
 	Message   string `json:"message"`
 	SendAt    string `json:"send_at"`  // ISO8601
 	Timezone  string `json:"timezone"` // optional, used for parsing if SendAt has no offset
@@ -69,17 +72,20 @@ func (p *Plugin) apiCreate(w http.ResponseWriter, r *http.Request, userID string
 	body.Message = strings.TrimSpace(body.Message)
 	body.Messages = trimMessages(body.Messages)
 
-	if body.ChannelID == "" {
-		http.Error(w, "channel_id is required", http.StatusBadRequest)
+	targets := normalizeChannelIDs(body.ChannelIDs, body.ChannelID)
+	if len(targets) == 0 {
+		http.Error(w, "channel_ids is required", http.StatusBadRequest)
 		return
 	}
 	if body.Message == "" && len(body.Messages) == 0 {
 		http.Error(w, "message is required", http.StatusBadRequest)
 		return
 	}
-	if !p.userCanPostInChannel(userID, body.ChannelID) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+	for _, channelID := range targets {
+		if !p.userCanPostInChannel(userID, channelID) {
+			http.Error(w, "forbidden: "+channelID, http.StatusForbidden)
+			return
+		}
 	}
 
 	sendAt, err := parseScheduleTime(body.SendAt, body.Timezone)
@@ -112,16 +118,16 @@ func (p *Plugin) apiCreate(w http.ResponseWriter, r *http.Request, userID string
 	}
 
 	msg := &ScheduledMessage{
-		ID:        model.NewId(),
-		ChannelID: body.ChannelID,
-		UserID:    userID,
-		Message:   primaryMessage,
-		SendAt:    sendAt.UnixMilli(),
-		CreatedAt: time.Now().UTC().UnixMilli(),
-		Status:    StatusPending,
-		Timezone:  tz,
-		Repeat:    body.Repeat,
-		WindowMs:  body.WindowMs,
+		ID:         model.NewId(),
+		ChannelIDs: targets,
+		UserID:     userID,
+		Message:    primaryMessage,
+		SendAt:     sendAt.UnixMilli(),
+		CreatedAt:  time.Now().UTC().UnixMilli(),
+		Status:     StatusPending,
+		Timezone:   tz,
+		Repeat:     body.Repeat,
+		WindowMs:   body.WindowMs,
 	}
 	if len(body.Messages) > 0 {
 		msg.Messages = body.Messages
@@ -152,8 +158,10 @@ func (p *Plugin) apiCreate(w http.ResponseWriter, r *http.Request, userID string
 }
 
 type updatePayload struct {
-	ID        string `json:"id"`
-	ChannelID string `json:"channel_id"`
+	ID         string   `json:"id"`
+	ChannelIDs []string `json:"channel_ids"`
+	// ChannelID is accepted as a legacy fallback (see createPayload).
+	ChannelID string `json:"channel_id,omitempty"`
 	Message   string `json:"message"`
 	SendAt    string `json:"send_at"`
 	Timezone  string `json:"timezone"`
@@ -186,13 +194,16 @@ func (p *Plugin) apiUpdate(w http.ResponseWriter, r *http.Request, userID string
 		http.Error(w, "message is required", http.StatusBadRequest)
 		return
 	}
-	if body.ChannelID == "" {
-		http.Error(w, "channel_id is required", http.StatusBadRequest)
+	targets := normalizeChannelIDs(body.ChannelIDs, body.ChannelID)
+	if len(targets) == 0 {
+		http.Error(w, "channel_ids is required", http.StatusBadRequest)
 		return
 	}
-	if !p.userCanPostInChannel(userID, body.ChannelID) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+	for _, channelID := range targets {
+		if !p.userCanPostInChannel(userID, channelID) {
+			http.Error(w, "forbidden: "+channelID, http.StatusForbidden)
+			return
+		}
 	}
 
 	existing, err := loadMessage(p.API, userID, body.ID)
@@ -237,7 +248,8 @@ func (p *Plugin) apiUpdate(w http.ResponseWriter, r *http.Request, userID string
 		primaryMessage = body.Messages[0]
 	}
 
-	existing.ChannelID = body.ChannelID
+	existing.ChannelIDs = targets
+	existing.ChannelID = ""
 	existing.Message = primaryMessage
 	existing.SendAt = sendAt.UnixMilli()
 	existing.Timezone = tz
@@ -310,6 +322,30 @@ func (p *Plugin) apiCancel(w http.ResponseWriter, r *http.Request, userID string
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// normalizeChannelIDs collapses the create/update payload's two target fields
+// into a single deduplicated slice. legacyChannelID is honored only when the
+// new channel_ids array is empty (older webapp builds, KV migration cases).
+// Order is preserved per first occurrence.
+func normalizeChannelIDs(channelIDs []string, legacyChannelID string) []string {
+	if len(channelIDs) == 0 && legacyChannelID != "" {
+		channelIDs = []string{legacyChannelID}
+	}
+	seen := make(map[string]struct{}, len(channelIDs))
+	out := make([]string, 0, len(channelIDs))
+	for _, id := range channelIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func (p *Plugin) userCanPostInChannel(userID, channelID string) bool {

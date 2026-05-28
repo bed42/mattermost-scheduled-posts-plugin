@@ -183,6 +183,112 @@ func TestSendDueMessagesLogsListError(t *testing.T) {
 	p.sendDueMessages()
 }
 
+// TestDispatchPostsToAllTargets confirms multi-channel dispatch creates one
+// post per target with the same body and per-channel ChannelId values.
+func TestDispatchPostsToAllTargets(t *testing.T) {
+	api := &plugintest.API{}
+	defer api.AssertExpectations(t)
+	p := newPluginWithConfig(api, &configuration{PollIntervalSeconds: 30, MaxAttempts: 3})
+
+	msg := &ScheduledMessage{
+		ID:         "m1",
+		ChannelIDs: []string{"c1", "c2", "c3"},
+		UserID:     "u1",
+		Message:    "hi",
+		SendAt:     time.Now().Add(-time.Second).UnixMilli(),
+		Status:     StatusPending,
+	}
+	encoded, _ := json.Marshal(msg)
+
+	api.On("KVSetWithOptions", "lock_m1", []byte("1"), mock.AnythingOfType("model.PluginKVSetOptions")).Return(true, nil)
+	api.On("KVGet", "scheduled_u1_m1").Return(encoded, nil)
+
+	seen := map[string]bool{}
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		if p.UserId != "u1" || p.Message != "hi" {
+			return false
+		}
+		seen[p.ChannelId] = true
+		return true
+	})).Return(&model.Post{Id: "post"}, (*model.AppError)(nil)).Times(3)
+
+	api.On("KVDelete", "scheduled_u1_m1").Return(nil)
+	api.On("KVDelete", "lock_m1").Return(nil)
+
+	p.dispatch(msg, 3)
+
+	require.True(t, seen["c1"] && seen["c2"] && seen["c3"], "each target channel should receive a post")
+}
+
+// TestDispatchPartialFailureCompletesNoRetry confirms that when at least one
+// channel accepts the post, the dispatch is treated as complete (one-off
+// deleted), the failures are logged, and no retry is queued.
+func TestDispatchPartialFailureCompletesNoRetry(t *testing.T) {
+	api := &plugintest.API{}
+	defer api.AssertExpectations(t)
+	p := newPluginWithConfig(api, &configuration{PollIntervalSeconds: 30, MaxAttempts: 3})
+
+	msg := &ScheduledMessage{
+		ID:         "m1",
+		ChannelIDs: []string{"good1", "bad", "good2"},
+		UserID:     "u1",
+		Message:    "hi",
+		SendAt:     time.Now().Add(-time.Second).UnixMilli(),
+		Status:     StatusPending,
+	}
+	encoded, _ := json.Marshal(msg)
+
+	api.On("KVSetWithOptions", "lock_m1", []byte("1"), mock.AnythingOfType("model.PluginKVSetOptions")).Return(true, nil)
+	api.On("KVGet", "scheduled_u1_m1").Return(encoded, nil)
+
+	appErr := model.NewAppError("CreatePost", "boom", nil, "channel deleted", 500)
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool { return p.ChannelId == "good1" })).Return(&model.Post{Id: "p1"}, (*model.AppError)(nil)).Once()
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool { return p.ChannelId == "bad" })).Return((*model.Post)(nil), appErr).Once()
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool { return p.ChannelId == "good2" })).Return(&model.Post{Id: "p2"}, (*model.AppError)(nil)).Once()
+
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+
+	// Schedule should be deleted (one-off), not re-saved for retry.
+	api.On("KVDelete", "scheduled_u1_m1").Return(nil)
+	api.On("KVDelete", "lock_m1").Return(nil)
+
+	p.dispatch(msg, 3)
+}
+
+// TestDispatchAllTargetsFailRetries confirms that when every channel fails,
+// the dispatch increments Attempts, persists the failure, and stays pending
+// for the next poll (existing retry semantics).
+func TestDispatchAllTargetsFailRetries(t *testing.T) {
+	api := &plugintest.API{}
+	defer api.AssertExpectations(t)
+	p := newPluginWithConfig(api, &configuration{PollIntervalSeconds: 30, MaxAttempts: 3})
+
+	msg := &ScheduledMessage{
+		ID: "m1", ChannelIDs: []string{"c1", "c2"}, UserID: "u1", Message: "hi",
+		SendAt: time.Now().Add(-time.Second).UnixMilli(),
+		Status: StatusPending, Attempts: 0,
+	}
+	encoded, _ := json.Marshal(msg)
+
+	api.On("KVSetWithOptions", "lock_m1", []byte("1"), mock.AnythingOfType("model.PluginKVSetOptions")).Return(true, nil)
+	api.On("KVGet", "scheduled_u1_m1").Return(encoded, nil)
+	appErr := model.NewAppError("CreatePost", "boom", nil, "channel deleted", 500)
+	api.On("CreatePost", mock.AnythingOfType("*model.Post")).Return((*model.Post)(nil), appErr).Times(2)
+
+	api.On("KVSet", "scheduled_u1_m1", mock.MatchedBy(func(b []byte) bool {
+		var saved ScheduledMessage
+		if err := json.Unmarshal(b, &saved); err != nil {
+			return false
+		}
+		return saved.Attempts == 1 && saved.Status == StatusPending && saved.LastError != ""
+	})).Return(nil)
+
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	api.On("KVDelete", "lock_m1").Return(nil)
+
+	p.dispatch(msg, 3)
+}
+
 // guard against compiler removing the errors import on refactor
 var _ = errors.New
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mattermost/mattermost-server/v6/model"
@@ -83,31 +85,60 @@ func (p *Plugin) dispatch(msg *ScheduledMessage, maxAttempts int) {
 	}
 
 	body, sentIdx := pickMessageBody(current)
-	post := &model.Post{
-		ChannelId: current.ChannelID,
-		UserId:    current.UserID,
-		Message:   body,
+	targets := current.Targets()
+	if len(targets) == 0 {
+		p.API.LogError("scheduler: message has no target channels, dropping", "id", current.ID)
+		_ = deleteMessage(p.API, current.UserID, current.ID)
+		return
 	}
-	if _, appErr := p.API.CreatePost(post); appErr != nil {
+
+	var failures []postFailure
+	successes := 0
+	for _, channelID := range targets {
+		post := &model.Post{
+			ChannelId: channelID,
+			UserId:    current.UserID,
+			Message:   body,
+		}
+		if _, appErr := p.API.CreatePost(post); appErr != nil {
+			failures = append(failures, postFailure{channelID: channelID, err: appErr.Error()})
+			continue
+		}
+		successes++
+	}
+
+	// All targets failed → treat as a full dispatch failure and use the
+	// existing retry path. The retry will hit every channel again, which is
+	// safe because none received the message this round.
+	if successes == 0 {
+		appErrMsg := joinFailures(failures)
 		current.Attempts++
-		current.LastError = appErr.Error()
+		current.LastError = appErrMsg
 		if current.Attempts >= maxAttempts {
 			if current.Repeat != "" {
 				// Recurring: skip this occurrence rather than killing the whole series.
-				p.skipFailedOccurrence(current, appErr.Error())
+				p.skipFailedOccurrence(current, appErrMsg)
 				return
 			}
 			current.Status = StatusFailed
 			p.API.LogError("scheduler: giving up on message",
-				"id", current.ID, "attempts", current.Attempts, "err", appErr.Error())
+				"id", current.ID, "attempts", current.Attempts, "err", appErrMsg)
 		} else {
 			p.API.LogWarn("scheduler: send failed, will retry",
-				"id", current.ID, "attempts", current.Attempts, "err", appErr.Error())
+				"id", current.ID, "attempts", current.Attempts, "err", appErrMsg)
 		}
 		if saveErr := saveMessage(p.API, current); saveErr != nil {
 			p.API.LogError("scheduler: failed to persist failure state", "err", saveErr.Error())
 		}
 		return
+	}
+
+	// At least one channel received the message. Log any per-target failures
+	// individually and treat the dispatch as complete — retrying would
+	// duplicate posts in the channels that already succeeded.
+	for _, f := range failures {
+		p.API.LogError("scheduler: per-target send failed (not retrying)",
+			"id", current.ID, "channel_id", f.channelID, "err", f.err)
 	}
 
 	// Send succeeded.
@@ -155,6 +186,24 @@ func (p *Plugin) advanceRecurring(msg *ScheduledMessage, sentIdx int) {
 	if err := saveMessage(p.API, msg); err != nil {
 		p.API.LogError("scheduler: failed to roll forward recurring message", "id", msg.ID, "err", err.Error())
 	}
+}
+
+// postFailure records a single per-channel CreatePost failure during a
+// multi-target dispatch.
+type postFailure struct {
+	channelID string
+	err       string
+}
+
+// joinFailures collapses per-channel failure errors into a single string for
+// persistence in LastError. Order is preserved so users can map errors back to
+// their target order. Each entry is "channelID: err".
+func joinFailures(failures []postFailure) string {
+	parts := make([]string, 0, len(failures))
+	for _, f := range failures {
+		parts = append(parts, fmt.Sprintf("%s: %s", f.channelID, f.err))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // randomFireAt returns sendAt + a random offset in [0, windowMs) when

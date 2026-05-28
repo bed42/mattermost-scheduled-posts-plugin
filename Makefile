@@ -1,5 +1,5 @@
 PLUGIN_ID := com.bednarz.scheduler
-PLUGIN_VERSION := 1.1.1
+PLUGIN_VERSION := 1.2.0
 BUNDLE_NAME := $(PLUGIN_ID)-$(PLUGIN_VERSION).tar.gz
 
 GO ?= go

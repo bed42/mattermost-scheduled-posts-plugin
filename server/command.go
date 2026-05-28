@@ -132,15 +132,15 @@ func (p *Plugin) handleCreateCommand(args *model.CommandArgs, tokens []string) (
 	}
 
 	msg := &ScheduledMessage{
-		ID:        model.NewId(),
-		ChannelID: args.ChannelId,
-		UserID:    args.UserId,
-		Message:   message,
-		SendAt:    sendAt.UnixMilli(),
-		CreatedAt: time.Now().UTC().UnixMilli(),
-		Status:    StatusPending,
-		Timezone:  tz,
-		Repeat:    repeat,
+		ID:         model.NewId(),
+		ChannelIDs: []string{args.ChannelId},
+		UserID:     args.UserId,
+		Message:    message,
+		SendAt:     sendAt.UnixMilli(),
+		CreatedAt:  time.Now().UTC().UnixMilli(),
+		Status:     StatusPending,
+		Timezone:   tz,
+		Repeat:     repeat,
 	}
 	if repeat != "" {
 		msg.EndsMode = endsMode

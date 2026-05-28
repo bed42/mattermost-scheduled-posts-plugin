@@ -129,12 +129,17 @@ const ScheduleModal: React.FC = () => {
         return opt?.label ?? id;
     };
 
-    const [channelId, setChannelId] = useState<string>('');
+    const [channelIds, setChannelIds] = useState<string[]>([]);
     const [channelQuery, setChannelQuery] = useState<string>('');
     const [channelMenuOpen, setChannelMenuOpen] = useState(false);
     const [highlightedIndex, setHighlightedIndex] = useState(0);
     const channelPickerRef = useRef<HTMLDivElement>(null);
     const channelListRef = useRef<HTMLUListElement>(null);
+    const channelInputRef = useRef<HTMLInputElement>(null);
+
+    const toggleChannel = (id: string) => {
+        setChannelIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    };
 
     const seed = useMemo(nextHour, []);
     const [messages, setMessages] = useState<string[]>(['']);
@@ -155,9 +160,11 @@ const ScheduleModal: React.FC = () => {
         if (!modalOpen) {
             return;
         }
-        const seededChannelId = editing ? editing.channel_id : (currentChannelId ?? '');
-        setChannelId(seededChannelId);
-        setChannelQuery(seededChannelId ? channelLabelById(seededChannelId) : '');
+        const seededChannelIds = editing ?
+            (editing.channel_ids ?? []) :
+            (currentChannelId ? [currentChannelId] : []);
+        setChannelIds(seededChannelIds);
+        setChannelQuery('');
         setChannelMenuOpen(false);
         if (editing) {
             const seedTz = editing.tz || browserTimezone();
@@ -203,18 +210,6 @@ const ScheduleModal: React.FC = () => {
         }
     }, [repeat]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Keep the channel input in sync with the selected channel's label
-    // whenever the menu is closed (covers late-loading channel data and
-    // post-selection state).
-    useEffect(() => {
-        if (channelMenuOpen) {
-            return;
-        }
-        if (channelId) {
-            setChannelQuery(channelLabelById(channelId));
-        }
-    }, [channelId, channelOptions, channelMenuOpen]); // eslint-disable-line react-hooks/exhaustive-deps
-
     useEffect(() => {
         if (!channelMenuOpen) {
             return undefined;
@@ -229,26 +224,21 @@ const ScheduleModal: React.FC = () => {
     }, [channelMenuOpen]);
 
     const filteredChannels = useMemo<ChannelOption[]>(() => {
-        const selectedLabel = channelId ? channelLabelById(channelId) : '';
         const q = channelQuery.trim().toLowerCase();
-        // If query matches the selected label exactly, show the full list — the
-        // user just opened the menu without typing anything new.
-        if (!q || channelQuery === selectedLabel) {
+        if (!q) {
             return channelOptions.slice(0, 100);
         }
         return channelOptions.filter((o) => o.label.toLowerCase().includes(q)).slice(0, 100);
-    }, [channelOptions, channelQuery, channelId]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [channelOptions, channelQuery]);
 
-    // When the menu opens, point the highlight at the currently selected
-    // channel (if visible) so up/down feels natural; otherwise highlight the
-    // first match. When the filter changes, clamp the highlight back to 0.
+    // When the menu opens or the filter changes, point the highlight at the
+    // first match — there's no single "selected" item to track in multi-select.
     useEffect(() => {
         if (!channelMenuOpen) {
             return;
         }
-        const i = filteredChannels.findIndex((o) => o.id === channelId);
-        setHighlightedIndex(i >= 0 ? i : 0);
-    }, [channelMenuOpen, filteredChannels, channelId]);
+        setHighlightedIndex(0);
+    }, [channelMenuOpen, filteredChannels]);
 
     // Keep the highlighted option in view as the user arrows up and down.
     useEffect(() => {
@@ -383,9 +373,8 @@ const ScheduleModal: React.FC = () => {
             setError('Please enter a message.');
             return;
         }
-        const targetChannelId = editing ? editing.channel_id : channelId;
-        if (!targetChannelId) {
-            setError('No channel selected.');
+        if (channelIds.length === 0) {
+            setError('Select at least one channel.');
             return;
         }
 
@@ -416,7 +405,7 @@ const ScheduleModal: React.FC = () => {
         const sendAt = `${date}T${time}:00`;
         const useMessagesArray = repeat && trimmed.length >= 2;
         const payload = {
-            channel_id: targetChannelId,
+            channel_ids: channelIds,
             message: trimmed[0],
             send_at: sendAt,
             timezone: tz,
@@ -459,122 +448,149 @@ const ScheduleModal: React.FC = () => {
                 <h3 style={{marginTop: 0}}>{editing ? 'Edit scheduled message' : 'Schedule a message'}</h3>
 
                 <label style={labelStyle}>{'Send to'}</label>
-                {editing ? (
+                <div
+                    ref={channelPickerRef}
+                    style={{position: 'relative'}}
+                >
+                    {channelIds.length > 0 && (
+                        <div style={chipsContainerStyle}>
+                            {channelIds.map((id) => (
+                                <span
+                                    key={id}
+                                    style={chipStyle}
+                                >
+                                    {channelLabelById(id)}
+                                    <button
+                                        type='button'
+                                        aria-label={`Remove ${channelLabelById(id)}`}
+                                        onClick={() => toggleChannel(id)}
+                                        style={chipRemoveStyle}
+                                    >
+                                        {'×'}
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                    )}
                     <input
+                        ref={channelInputRef}
                         type='text'
-                        value={channelLabelById(editing.channel_id)}
-                        disabled={true}
+                        value={channelQuery}
+                        placeholder={channelIds.length === 0 ? 'Type a channel name or @user' : 'Add another channel…'}
+                        role='combobox'
+                        aria-expanded={channelMenuOpen}
+                        aria-controls='schedule-channel-listbox'
+                        aria-activedescendant={
+                            channelMenuOpen && filteredChannels[highlightedIndex] ?
+                                `schedule-channel-opt-${filteredChannels[highlightedIndex].id}` :
+                                undefined
+                        }
+                        onChange={(e) => {
+                            setChannelQuery(e.target.value);
+                            setChannelMenuOpen(true);
+                        }}
+                        onFocus={() => {
+                            setChannelMenuOpen(true);
+                        }}
+                        onKeyDown={(e) => {
+                            if (e.key === 'ArrowDown') {
+                                e.preventDefault();
+                                if (!channelMenuOpen) {
+                                    setChannelMenuOpen(true);
+                                    return;
+                                }
+                                setHighlightedIndex((i) => Math.min(i + 1, filteredChannels.length - 1));
+                            } else if (e.key === 'ArrowUp') {
+                                e.preventDefault();
+                                if (!channelMenuOpen) {
+                                    setChannelMenuOpen(true);
+                                    return;
+                                }
+                                setHighlightedIndex((i) => Math.max(i - 1, 0));
+                            } else if (e.key === 'Home') {
+                                if (channelMenuOpen) {
+                                    e.preventDefault();
+                                    setHighlightedIndex(0);
+                                }
+                            } else if (e.key === 'End') {
+                                if (channelMenuOpen) {
+                                    e.preventDefault();
+                                    setHighlightedIndex(filteredChannels.length - 1);
+                                }
+                            } else if (e.key === 'Enter') {
+                                if (channelMenuOpen && filteredChannels[highlightedIndex]) {
+                                    e.preventDefault();
+                                    toggleChannel(filteredChannels[highlightedIndex].id);
+                                    setChannelQuery('');
+                                }
+                            } else if (e.key === 'Backspace') {
+                                // Pop the last chip when the query is empty —
+                                // a common multi-select interaction (like Mattermost's
+                                // own people picker).
+                                if (channelQuery === '' && channelIds.length > 0) {
+                                    e.preventDefault();
+                                    setChannelIds(channelIds.slice(0, -1));
+                                }
+                            } else if (e.key === 'Escape') {
+                                if (channelMenuOpen) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setChannelMenuOpen(false);
+                                    setChannelQuery('');
+                                }
+                            } else if (e.key === 'Tab') {
+                                setChannelMenuOpen(false);
+                            }
+                        }}
                         style={inputStyle}
                     />
-                ) : (
-                    <div
-                        ref={channelPickerRef}
-                        style={{position: 'relative'}}
-                    >
-                        <input
-                            type='text'
-                            value={channelQuery}
-                            placeholder='Type a channel name or @user'
-                            role='combobox'
-                            aria-expanded={channelMenuOpen}
-                            aria-controls='schedule-channel-listbox'
-                            aria-activedescendant={
-                                channelMenuOpen && filteredChannels[highlightedIndex] ?
-                                    `schedule-channel-opt-${filteredChannels[highlightedIndex].id}` :
-                                    undefined
-                            }
-                            onChange={(e) => {
-                                setChannelQuery(e.target.value);
-                                setChannelMenuOpen(true);
-                            }}
-                            onFocus={(e) => {
-                                setChannelMenuOpen(true);
-                                e.currentTarget.select();
-                            }}
-                            onKeyDown={(e) => {
-                                if (e.key === 'ArrowDown') {
-                                    e.preventDefault();
-                                    if (!channelMenuOpen) {
-                                        setChannelMenuOpen(true);
-                                        return;
-                                    }
-                                    setHighlightedIndex((i) => Math.min(i + 1, filteredChannels.length - 1));
-                                } else if (e.key === 'ArrowUp') {
-                                    e.preventDefault();
-                                    if (!channelMenuOpen) {
-                                        setChannelMenuOpen(true);
-                                        return;
-                                    }
-                                    setHighlightedIndex((i) => Math.max(i - 1, 0));
-                                } else if (e.key === 'Home') {
-                                    if (channelMenuOpen) {
-                                        e.preventDefault();
-                                        setHighlightedIndex(0);
-                                    }
-                                } else if (e.key === 'End') {
-                                    if (channelMenuOpen) {
-                                        e.preventDefault();
-                                        setHighlightedIndex(filteredChannels.length - 1);
-                                    }
-                                } else if (e.key === 'Enter') {
-                                    if (channelMenuOpen && filteredChannels[highlightedIndex]) {
-                                        e.preventDefault();
-                                        const o = filteredChannels[highlightedIndex];
-                                        setChannelId(o.id);
-                                        setChannelQuery(o.label);
-                                        setChannelMenuOpen(false);
-                                    }
-                                } else if (e.key === 'Escape') {
-                                    if (channelMenuOpen) {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setChannelMenuOpen(false);
-                                        // Revert any typed-but-not-committed text.
-                                        if (channelId) {
-                                            setChannelQuery(channelLabelById(channelId));
-                                        }
-                                    }
-                                } else if (e.key === 'Tab') {
-                                    setChannelMenuOpen(false);
-                                }
-                            }}
-                            style={inputStyle}
-                        />
-                        {channelMenuOpen && filteredChannels.length > 0 && (
-                            <ul
-                                id='schedule-channel-listbox'
-                                role='listbox'
-                                ref={channelListRef}
-                                style={pickerMenuStyle}
-                            >
-                                {filteredChannels.map((o, idx) => (
+                    {channelMenuOpen && filteredChannels.length > 0 && (
+                        <ul
+                            id='schedule-channel-listbox'
+                            role='listbox'
+                            aria-multiselectable='true'
+                            ref={channelListRef}
+                            style={pickerMenuStyle}
+                        >
+                            {filteredChannels.map((o, idx) => {
+                                const selected = channelIds.includes(o.id);
+                                return (
                                     <li
                                         key={o.id}
                                         id={`schedule-channel-opt-${o.id}`}
                                         role='option'
-                                        aria-selected={o.id === channelId}
+                                        aria-selected={selected}
                                         style={{
                                             ...pickerOptionStyle,
                                             ...(idx === highlightedIndex ? pickerOptionHighlightedStyle : null),
-                                            ...(o.id === channelId ? pickerOptionSelectedStyle : null),
+                                            ...(selected ? pickerOptionSelectedStyle : null),
                                         }}
                                         onMouseEnter={() => setHighlightedIndex(idx)}
                                         onMouseDown={(e) => {
-                                            // mouseDown (not click) so we beat the input's blur
+                                            // mouseDown (not click) so we beat the input's blur,
+                                            // and keep focus on the input so Enter keeps toggling.
                                             e.preventDefault();
-                                            setChannelId(o.id);
-                                            setChannelQuery(o.label);
-                                            setChannelMenuOpen(false);
+                                            toggleChannel(o.id);
+                                            setChannelQuery('');
+                                            channelInputRef.current?.focus();
                                         }}
                                     >
+                                        <span style={pickerCheckboxStyle} aria-hidden='true'>
+                                            {selected ? '☑' : '☐'}
+                                        </span>
                                         {o.label}
                                     </li>
-                                ))}
-                            </ul>
-                        )}
-                        {channelMenuOpen && filteredChannels.length === 0 && (
-                            <div style={pickerEmptyStyle}>{'No matches.'}</div>
-                        )}
+                                );
+                            })}
+                        </ul>
+                    )}
+                    {channelMenuOpen && filteredChannels.length === 0 && (
+                        <div style={pickerEmptyStyle}>{'No matches.'}</div>
+                    )}
+                </div>
+                {channelIds.length > 0 && (
+                    <div style={targetCountStyle}>
+                        {`Will be posted to ${channelIds.length} channel${channelIds.length === 1 ? '' : 's'}.`}
                     </div>
                 )}
 
@@ -883,6 +899,49 @@ const addAnotherStyle: React.CSSProperties = {
     fontSize: 13,
     cursor: 'pointer',
     textAlign: 'left',
+};
+
+const chipsContainerStyle: React.CSSProperties = {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginBottom: 6,
+};
+
+const chipStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    padding: '2px 6px 2px 8px',
+    fontSize: 12,
+    background: 'rgba(28,88,217,0.10)',
+    color: 'var(--link-color, #166de0)',
+    border: '1px solid rgba(28,88,217,0.20)',
+    borderRadius: 12,
+    lineHeight: 1.4,
+};
+
+const chipRemoveStyle: React.CSSProperties = {
+    background: 'transparent',
+    border: 'none',
+    color: 'inherit',
+    cursor: 'pointer',
+    padding: 0,
+    fontSize: 14,
+    lineHeight: 1,
+};
+
+const pickerCheckboxStyle: React.CSSProperties = {
+    display: 'inline-block',
+    width: '1.2em',
+    marginRight: 6,
+    fontSize: 13,
+};
+
+const targetCountStyle: React.CSSProperties = {
+    marginTop: 4,
+    fontSize: 12,
+    color: 'rgba(63,67,80,0.72)',
 };
 
 export default ScheduleModal;

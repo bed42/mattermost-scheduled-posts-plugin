@@ -143,7 +143,7 @@ const ScheduledList: React.FC = () => {
         }
     };
 
-    const channelName = (id: string) => {
+    const channelLabel = (id: string) => {
         const ch = channels?.[id];
         if (ch?.type === 'D') {
             // For DMs the channel's display_name/name is the concatenated user IDs.
@@ -164,6 +164,30 @@ const ScheduledList: React.FC = () => {
             return ch.display_name.split(',').map((s) => `@${s.trim()}`).join(', ');
         }
         return ch?.display_name || ch?.name || id;
+    };
+
+    // renderTargets shows the first label, with "+N more" when there are
+    // additional targets. The full comma-joined list is exposed via the title
+    // attribute so users get the complete picture on hover.
+    const renderTargets = (ids: string[]) => {
+        if (ids.length === 0) {
+            return null;
+        }
+        const labels = ids.map(channelLabel);
+        if (labels.length === 1) {
+            return <span>{labels[0]}</span>;
+        }
+        if (labels.length === 2) {
+            return (
+                <span title={labels.join(', ')}>{labels.join(', ')}</span>
+            );
+        }
+        return (
+            <span title={labels.join(', ')}>
+                {labels[0]}
+                <span style={moreTargetsStyle}>{` +${labels.length - 1} more`}</span>
+            </span>
+        );
     };
 
     const onClose = () => dispatch(closeScheduledList());
@@ -228,7 +252,7 @@ const ScheduledList: React.FC = () => {
                                 return (
                                     <tr key={m.id} style={completed ? completedRowStyle : undefined}>
                                         <td style={tdStyle}>{formatWhen(m, rowTz)}</td>
-                                        <td style={tdStyle}>{channelName(m.channel_id)}</td>
+                                        <td style={tdStyle}>{renderTargets(m.channel_ids ?? [])}</td>
                                         <td style={tdStyle}>{describeRepeat(m, rowTz)}</td>
                                         <td style={tdStyle}>
                                             {m.message.length > 80 ? m.message.slice(0, 80) + '…' : m.message}
@@ -351,6 +375,10 @@ const rotationHintStyle: React.CSSProperties = {
     fontSize: 11,
     color: 'rgba(63,67,80,0.6)',
     marginTop: 2,
+};
+
+const moreTargetsStyle: React.CSSProperties = {
+    color: 'rgba(63,67,80,0.6)',
 };
 
 export default ScheduledList;

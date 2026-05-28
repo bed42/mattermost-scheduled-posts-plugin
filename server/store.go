@@ -34,8 +34,12 @@ const (
 )
 
 type ScheduledMessage struct {
-	ID        string `json:"id"`
-	ChannelID string `json:"channel_id"`
+	ID         string   `json:"id"`
+	ChannelIDs []string `json:"channel_ids,omitempty"`
+	// ChannelID is the legacy single-channel field. It is only read on
+	// unmarshal of pre-multi-channel records; new records write ChannelIDs.
+	// normalizeTargets() promotes it into ChannelIDs and clears it on load.
+	ChannelID string `json:"channel_id,omitempty"`
 	UserID    string `json:"user_id"`
 	Message   string `json:"message"`
 	SendAt    int64  `json:"send_at"`
@@ -68,6 +72,28 @@ type ScheduledMessage struct {
 	MessageCycle    []int    `json:"message_cycle,omitempty"`
 	MessageCyclePos int      `json:"message_cycle_pos,omitempty"`
 	LastSentIndex   *int     `json:"last_sent_index,omitempty"`
+}
+
+// Targets returns the channel IDs this message will post to. Always read
+// targets through this helper rather than touching ChannelIDs/ChannelID
+// directly — it isolates callers from the legacy single-channel shape.
+func (m *ScheduledMessage) Targets() []string {
+	if len(m.ChannelIDs) > 0 {
+		return m.ChannelIDs
+	}
+	if m.ChannelID != "" {
+		return []string{m.ChannelID}
+	}
+	return nil
+}
+
+// normalizeTargets promotes a legacy ChannelID into ChannelIDs so downstream
+// code sees a single shape. Called by load paths after json.Unmarshal.
+func (m *ScheduledMessage) normalizeTargets() {
+	if len(m.ChannelIDs) == 0 && m.ChannelID != "" {
+		m.ChannelIDs = []string{m.ChannelID}
+	}
+	m.ChannelID = ""
 }
 
 // effectiveFireAt is the moment the scheduler should actually post. For
@@ -126,6 +152,7 @@ func loadMessage(api plugin.API, userID, msgID string) (*ScheduledMessage, error
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal message")
 	}
+	msg.normalizeTargets()
 	return &msg, nil
 }
 
@@ -173,6 +200,7 @@ func listMessagesWithPrefix(api plugin.API, prefix string) ([]*ScheduledMessage,
 				api.LogWarn("failed to unmarshal scheduled message", "key", key, "err", err.Error())
 				continue
 			}
+			msg.normalizeTargets()
 			messages = append(messages, &msg)
 		}
 		if len(keys) < listPageSize {

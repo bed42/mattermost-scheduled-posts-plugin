@@ -126,6 +126,39 @@ func TestAcquireSendLockReturnsFalseWhenContended(t *testing.T) {
 	assert.False(t, got)
 }
 
+// TestLoadMessageNormalizesLegacyChannelID ensures pre-multi-channel records
+// (which stored a single channel_id) load with that ID promoted into
+// ChannelIDs and the legacy field cleared. Downstream code reads Targets().
+func TestLoadMessageNormalizesLegacyChannelID(t *testing.T) {
+	api := &plugintest.API{}
+	defer api.AssertExpectations(t)
+
+	legacy := []byte(`{"id":"m1","user_id":"u1","channel_id":"chOLD","message":"hi","status":"pending"}`)
+	api.On("KVGet", "scheduled_u1_m1").Return(legacy, nil)
+
+	got, err := loadMessage(api, "u1", "m1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, []string{"chOLD"}, got.ChannelIDs)
+	assert.Equal(t, "", got.ChannelID, "legacy ChannelID should be cleared after normalization")
+	assert.Equal(t, []string{"chOLD"}, got.Targets())
+}
+
+func TestTargetsPrefersChannelIDs(t *testing.T) {
+	m := &ScheduledMessage{ChannelIDs: []string{"a", "b"}, ChannelID: "ignored"}
+	assert.Equal(t, []string{"a", "b"}, m.Targets())
+}
+
+func TestTargetsFallsBackToLegacyChannelID(t *testing.T) {
+	m := &ScheduledMessage{ChannelID: "only"}
+	assert.Equal(t, []string{"only"}, m.Targets())
+}
+
+func TestTargetsEmptyWhenNothingSet(t *testing.T) {
+	m := &ScheduledMessage{}
+	assert.Nil(t, m.Targets())
+}
+
 // itoa avoids importing strconv just for tests.
 func itoa(i int) string {
 	if i == 0 {

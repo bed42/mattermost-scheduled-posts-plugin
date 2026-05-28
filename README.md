@@ -12,7 +12,7 @@ Works on web and desktop. Slash command works on **all platforms** including iOS
 
 ### Channel header
 
-A clock icon appears in every channel's header. Clicking it opens the scheduling modal with a date, time, and timezone picker. The modal pre-fills with sensible defaults (next whole hour in your browser's timezone). You can also opt into a **random time within a range** (e.g. somewhere between 1:00 PM and 3:00 PM) and — for recurring schedules — supply **multiple messages** that rotate.
+A clock icon appears in every channel's header. Clicking it opens the scheduling modal with a date, time, and timezone picker. The modal pre-fills with sensible defaults (next whole hour in your browser's timezone). You can pick **one or many target channels** in the same schedule (handy for announcements that need to land in several places at once), opt into a **random time within a range** (e.g. somewhere between 1:00 PM and 3:00 PM), and — for recurring schedules — supply **multiple messages** that rotate.
 
 ![The schedule action button](images/schedule-button.png)
 
@@ -42,6 +42,7 @@ Timezone defaults to your Mattermost profile timezone, then the plugin's configu
 
 - **No license required** - Works on Mattermost Team Edition
 - **Channel-header UI** - Clock icon opens a calendar/time picker modal
+- **Multi-channel targeting** - One schedule can post to many channels at once (public channels, private channels, DMs, group messages). Each occurrence fans out to every selected target. Channel membership is checked per target at create/edit time
 - **Slash command** - `/schedule "msg" "YYYY-MM-DD HH:MM" [timezone] [repeat=...] [count=N|until=YYYY-MM-DD]`, plus `list` and `cancel <id>`
 - **Recurring schedules** - Daily, weekdays-only, weekly, fortnightly, monthly, or yearly, ending never / on a date / after N occurrences. DST-correct: a "weekly Mon 9 AM Sydney" series stays at 9 AM Sydney across DST transitions
 - **Random time within a range** - Optionally fire at a random instant within a time window (e.g. "between 1 PM and 3 PM"). For recurring schedules each occurrence picks a fresh random moment inside the same window
@@ -68,7 +69,7 @@ cd mattermost-scheduled-posts-plugin
 # Build the plugin
 make dist
 
-# Bundle is at dist/com.bednarz.scheduler-0.1.0.tar.gz
+# Bundle is at dist/com.bednarz.scheduler-1.2.0.tar.gz
 ```
 
 1. Go to **System Console > Plugins > Plugin Management**
@@ -90,10 +91,11 @@ In **System Console > Plugins > Message Scheduler**:
 ### Via the modal
 
 1. Click the clock icon in any channel header
-2. Type your message, pick a date and time, optionally change the timezone
-3. (Optional) Tick **Fire at a random time within a range** and pick an end time — the schedule will fire at a random instant between start and end
-4. (Optional) Pick a repeat option, then click **+ Add another message** to attach more messages. The schedule will cycle through all of them at random, covering every message once before any can repeat
-5. Click **Schedule**
+2. Add one or more target channels (the current channel is pre-selected; click extra channels/users to fan out the same message)
+3. Type your message, pick a date and time, optionally change the timezone
+4. (Optional) Tick **Fire at a random time within a range** and pick an end time — the schedule will fire at a random instant between start and end
+5. (Optional) Pick a repeat option, then click **+ Add another message** to attach more messages. The schedule will cycle through all of them at random, covering every message once before any can repeat
+6. Click **Schedule**
 
 The message will be sent at the chosen time as if you had typed it yourself in that channel. Pending schedules can be edited from the **Scheduled** list in the sidebar.
 
@@ -109,7 +111,7 @@ The message will be sent at the chosen time as if you had typed it yourself in t
 - Send time must be at least 30 seconds in the future
 - The timezone argument is optional — defaults to your Mattermost profile timezone, then `DefaultTimezone`, then UTC
 - Messages are posted as you, in the channel where you ran the command (or, for the modal, the channel you had open)
-- The slash command covers single-message, single-time schedules. Time ranges and message rotation are modal-only — use the clock icon for those
+- The slash command covers single-message, single-time, single-channel schedules. Multi-channel targets, time ranges, and message rotation are modal-only — use the clock icon for those
 
 ## Architecture
 

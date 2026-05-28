@@ -3,7 +3,7 @@ export type EndsMode = '' | 'never' | 'on' | 'after';
 
 export type ScheduledMessage = {
     id: string;
-    channel_id: string;
+    channel_ids: string[];
     user_id: string;
     message: string;
     send_at: number;
@@ -26,7 +26,7 @@ export type ScheduledMessage = {
 };
 
 export type CreatePayload = {
-    channel_id: string;
+    channel_ids: string[];
     message: string;
     send_at: string;
     timezone: string;
